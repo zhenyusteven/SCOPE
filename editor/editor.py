@@ -46,7 +46,7 @@ class Editor:
     def get_lines_radius(self, center: int, radius: int) -> str:
         return self.get_lines_range(center - radius, center + radius + 1)
 
-    def get_all_lines(self):
+    def get_all_lines(self) -> str:
         return self.get_lines_range(0, len(self.lines))
 
     def __repr__(self) -> str:

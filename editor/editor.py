@@ -44,9 +44,7 @@ class Editor:
         )
 
     def get_lines_radius(self, center: int, radius: int) -> str:
-        start = max(0, center - radius)
-        end = min(len(self.lines), center + radius + 1)
-        return self.get_lines_range(start, end)
+        return self.get_lines_range(center - radius, center + radius + 1)
 
     def get_all_lines(self):
         return self.get_lines_range(0, len(self.lines))

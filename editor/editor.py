@@ -73,6 +73,9 @@ if __name__ == "__main__":
 
     def size(self):
         /* SUBCOMPONENT */
+        
+    def clear(self):
+        self.items = []
     """
 
     editor = Editor(code)

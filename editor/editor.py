@@ -32,7 +32,12 @@ class Editor:
     # Getters
     def get_all_lines(self):
         line_id_space = self._get_num_digits(len(self.lines))
-        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(len(self.lines)), self.lines)))
+        return '\n'.join(
+            map(
+                lambda x: f"{x[0]:>{line_id_space}}:{x[1]}",
+                zip(range(len(self.lines)), self.lines)
+            )
+        )
 
     def get_lines_range(self, start: int, end: int) -> str:
         start = max(0, start)
@@ -40,13 +45,23 @@ class Editor:
         if start >= end:
             return ""
         line_id_space = self._get_num_digits(end)
-        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
+        return '\n'.join(
+            map(
+                lambda x: f"{x[0]:>{line_id_space}}:{x[1]}",
+                zip(range(start, end), self.lines[start:end])
+            )
+        )
 
     def get_lines_radius(self, center: int, radius: int) -> str:
         start = max(0, center - radius)
         end = min(len(self.lines), center + radius + 1)
         line_id_space = self._get_num_digits(end)
-        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
+        return '\n'.join(
+            map(
+                lambda x: f"{x[0]:>{line_id_space}}:{x[1]}",
+                zip(range(start, end), self.lines[start:end])
+            )
+        )
 
     def __repr__(self) -> str:
         return self.get_all_lines()

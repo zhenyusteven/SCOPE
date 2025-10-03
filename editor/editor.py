@@ -2,7 +2,6 @@ from typing import List, Dict, Any, Optional, Tuple
 
 class Editor:
     def __init__(self, lines: Optional[str] = None):
-        self.line_id_indent = 6
         if lines is None:
             self.lines = []
         else:
@@ -20,21 +19,37 @@ class Editor:
                 return i
         return None
 
+    @staticmethod
+    def _get_num_digits(n):
+        if n == 0:
+            return 1
+        count = 0
+        while n:
+            n //= 10
+            count += 1
+        return count
+
     # Getters
+    def get_all_lines(self):
+        line_id_space = self._get_num_digits(len(self.lines))
+        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(len(self.lines)), self.lines)))
+
     def get_lines_range(self, start: int, end: int) -> str:
         start = max(0, start)
         end = min(len(self.lines), end)
         if start >= end:
             return ""
-        return '\n'.join(map(lambda x: f"{x[0]:<{self.line_id_indent}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
+        line_id_space = self._get_num_digits(end)
+        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
 
     def get_lines_radius(self, center: int, radius: int) -> str:
         start = max(0, center - radius)
         end = min(len(self.lines), center + radius + 1)
-        return '\n'.join(map(lambda x: f"{x[0]:<{self.line_id_indent}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
+        line_id_space = self._get_num_digits(end)
+        return '\n'.join(map(lambda x: f"{x[0]:>{line_id_space}}:{x[1]}", zip(range(start, end), self.lines[start:end])))
 
     def __repr__(self) -> str:
-        return "\n".join(self.lines)
+        return self.get_all_lines()
 
 
 
@@ -70,5 +85,7 @@ if __name__ == "__main__":
     print("\n\n\n")
     editor.insert_lines(idx, ["-----A-----", "-----B-----", "-----C-----"])
     print(editor.get_lines_radius(idx, 5))
+    print("\n\n\n")
+    print(editor.get_all_lines())
 
 

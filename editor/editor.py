@@ -30,24 +30,27 @@ class Editor:
         return count
 
     # Getters
-    def get_lines_range(self, start: int, end: int) -> str:
+    def get_lines_range(self, start: int, end: int, with_line_id: bool = True) -> str:
         start = max(0, start)
         end = min(len(self.lines), end)
         if start >= end:
             return ""
-        line_id_space = self._get_num_digits(end)
-        return '\n'.join(
-            map(
-                lambda x: f"{x[0]:>{line_id_space}}:{x[1]}",
-                zip(range(start, end), self.lines[start:end])
+        if with_line_id:
+            line_id_space = self._get_num_digits(end)
+            return '\n'.join(
+                map(
+                    lambda x: f"{x[0]:>{line_id_space}}:{x[1]}",
+                    zip(range(start, end), self.lines[start:end])
+                )
             )
-        )
+        else:
+            return '\n'.join(self.lines[start:end])
 
-    def get_lines_radius(self, center: int, radius: int) -> str:
-        return self.get_lines_range(center - radius, center + radius + 1)
+    def get_lines_radius(self, center: int, radius: int, with_line_id: bool = True) -> str:
+        return self.get_lines_range(center - radius, center + radius + 1, with_line_id)
 
-    def get_all_lines(self) -> str:
-        return self.get_lines_range(0, len(self.lines))
+    def get_all_lines(self, with_line_id: bool = True) -> str:
+        return self.get_lines_range(0, len(self.lines), with_line_id)
 
     def __repr__(self) -> str:
         return self.get_all_lines()

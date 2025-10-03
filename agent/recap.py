@@ -42,4 +42,3 @@ class RecapSWE:
 
     def get_output_code(self, with_line_id: bool = False) -> str:
         return self.editor.get_all_lines(with_line_id=with_line_id)
-

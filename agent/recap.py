@@ -15,23 +15,29 @@ class RecapNode:
         self.children.append(child_node)
 
 
-class RecapSWE:
+class RecapSWE(ABC):
     def __init__(self, task_name: str, task_description: str, fewshot_example: str) -> None:
         self.editor = Editor()
         self.task_name = task_name
         self.task_description = task_description
         self.fewshot_example = fewshot_example
         self.context_tree = RecapNode(task_name, task_description)
-        self.llm_context = []
+        self.most_recent_observation = None
+
+
+    @abstractmethod
+    def is_primitive_task(self, task_name: str) -> bool:
+        pass
 
     def run(self) -> str:
-        # Run ReCAP-SWE, with closure function inside
+        # Run ReCAP-SWE, with a closure function inside
         # TODO: write main execution logic
+
         return self.editor.get_all_lines(with_line_id=False)
 
     def get_subtask_hierarchy(self) -> str:
         ans = []
-        def dfs(node, depth):
+        def dfs(node: RecapNode, depth: int) -> None:
             if node is None:
                 return
             ans.append(' ' * (depth * 4) + self.task_name)

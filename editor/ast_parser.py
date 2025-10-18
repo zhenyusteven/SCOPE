@@ -413,6 +413,20 @@ class ProjectParser:
 
         return self._index[file][symbol_path], new_src
 
+    def list_symbols(self, file_path: str | Path) -> list[SymbolRecord]:
+        """
+        Return all symbols (classes, functions, methods) in a given file.
+        """
+        file = self._abs(file_path)
+        if file not in self._index:
+            raise KeyError(f"File not indexed: {file}")
+        return list(self._index[file].values())
+
+    def get_all_files(self) -> list[Path]:
+        """
+        Return all indexed Python files in the project.
+        """
+        return list(self._index.keys())
 
 # --- quick demo ---
 if __name__ == "__main__":
@@ -454,3 +468,7 @@ if __name__ == "__main__":
     print(rec.position.start_line)
     print(parser.code_with_lineno(out, start_line=rec.position.start_line))
     print(rec.position.end_line)
+    print("-- List all symbols in editor.py --")
+    print(parser.list_symbols("editor.py"))
+    print("-- All indexed files --")
+    print(parser.get_all_files())

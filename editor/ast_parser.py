@@ -218,7 +218,7 @@ class ProjectParser:
                     files.append(self._abs(Path(dirpath) / name))
         return files
 
-        # --- modification API ---
+    # --- modification API ---
     def transform_function(
             self,
             file_path: str | Path,

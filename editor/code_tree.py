@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Iterable, Callable, Tuple
 from pathlib import Path
 import re
+import json
 
 from ast_parser import ProjectParser
 
@@ -64,7 +65,21 @@ class CodeNode:
 
         out = "\n".join(blocks).strip()
         return out[:max_chars]
+    
+    def to_dict(self, include_source: bool = True) -> Dict:
+        """递归转换为可序列化的 dict"""
+        data = {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "summary": self.summary,
+            "children": [],
+            "meta": self.meta,
+        }
+        if include_source and self.source:
+            data["source"] = self.source[:50] + ("..." if len(self.source) > 50 else "")
 
+        return data
 
 # ============ Tree ============
 
@@ -118,12 +133,13 @@ class CodeSemanticTree:
 
             for rec in parser.list_symbols(file):
                 node_id = f"{file_id}::{rec.qualname}"
+                src = parser.get_source_with_context(rec, before=0, after=0)
                 if rec.kind == "class":
                     cls = CodeNode(
                         id=node_id,
                         name=rec.qualname,
                         kind="class",
-                        source=None,
+                        source=src,
                         summary=None,
                         meta={
                             "file": str(file),
@@ -284,6 +300,27 @@ class CodeSemanticTree:
 
         return out
     
+    def to_json(self, include_source: bool = True, indent: int = 2) -> str:
+        """导出整棵语义树为 JSON 字符串"""
+        if not self.root:
+            raise ValueError("Tree has no root node")
+
+        def build_subtree(node: CodeNode) -> Dict:
+            data = node.to_dict(include_source=include_source)
+            data["children"] = [
+                build_subtree(self.nodes[cid]) for cid in node.children
+            ]
+            return data
+
+        root_dict = build_subtree(self.root)
+        return json.dumps(root_dict, indent=indent, ensure_ascii=False)
+    
+    def save_json(self, path: str, include_source: bool = True):
+        json_str = self.to_json(include_source=include_source)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        print(f"Tree saved to {path}")
+
     def edit_symbol(
         self,
         file_path: str | Path,

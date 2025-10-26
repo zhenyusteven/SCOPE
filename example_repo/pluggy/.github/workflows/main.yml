@@ -1,0 +1,151 @@
+name: main
+
+on:
+  push:
+    branches:
+      - main
+      - test-me-*
+    tags:
+      - "*"
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-package:
+    name: Build & inspect our package.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: hynek/build-and-inspect-python-package@v2
+  test:
+    needs: [check-package]
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [
+          "windows-py39",
+          "windows-py313",
+          "windows-pypy3",
+
+          "ubuntu-py310-pytestmain",
+          "ubuntu-py39",
+          "ubuntu-py310",
+          "ubuntu-py311",
+          "ubuntu-py312",
+          "ubuntu-py313",
+          "ubuntu-pypy3",
+          "ubuntu-benchmark",
+        ]
+
+        include:
+          - name: "windows-py39"
+            python: "3.9"
+            os: windows-latest
+            tox_env: "py39"
+          - name: "windows-py313"
+            python: "3.13"
+            os: windows-latest
+            tox_env: "py313"
+          - name: "windows-pypy3"
+            python: "pypy3.9"
+            os: windows-latest
+            tox_env: "pypy3"
+          - name: "ubuntu-py310-pytestmain"
+            python: "3.10"
+            os: ubuntu-latest
+            tox_env: "py310-pytestmain"
+            use_coverage: true
+          - name: "ubuntu-py39"
+            python: "3.9"
+            os: ubuntu-latest
+            tox_env: "py39"
+            use_coverage: true
+          - name: "ubuntu-py310"
+            python: "3.10"
+            os: ubuntu-latest
+            tox_env: "py310"
+          - name: "ubuntu-py311"
+            python: "3.11"
+            os: ubuntu-latest
+            tox_env: "py311"
+            use_coverage: true
+          - name: "ubuntu-py312"
+            python: "3.12"
+            os: ubuntu-latest
+            tox_env: "py312"
+            use_coverage: true
+          - name: "ubuntu-py313"
+            python: "3.13"
+            os: ubuntu-latest
+            tox_env: "py313"
+            use_coverage: true
+          - name: "ubuntu-pypy3"
+            python: "pypy3.9"
+            os: ubuntu-latest
+            tox_env: "pypy3"
+            use_coverage: true
+          - name: "ubuntu-benchmark"
+            python: "3.9"
+            os: ubuntu-latest
+            tox_env: "benchmark"
+
+    steps:
+    - uses: actions/checkout@v5
+    - name: Download built packages from the check-package job.
+      uses: actions/download-artifact@v5
+      with:
+        name: Packages
+        path: dist
+    - name: Set up Python ${{ matrix.python }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python }}
+        allow-prereleases: true
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip setuptools
+        python -m pip install tox coverage
+
+    - name: Test without coverage
+      if: "! matrix.use_coverage"
+      shell: bash
+      run: "tox run -e ${{ matrix.tox_env }}  --installpkg dist/*.whl"
+
+    - name: Test with coverage
+      if: "matrix.use_coverage"
+      shell: bash
+      run: "tox run -e ${{ matrix.tox_env }}-coverage --installpkg dist/*.whl"
+
+    - name: Upload coverage
+      if: matrix.use_coverage && github.repository == 'pytest-dev/pluggy'
+      uses: codecov/codecov-action@v5
+      continue-on-error: true
+      with:
+        fail_ci_if_error: true
+        files: ./coverage.xml
+        verbose: true
+
+  deploy:
+    needs: [check-package]
+    if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags') && github.repository == 'pytest-dev/pluggy'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download built packages from the check-package job.
+        uses: actions/download-artifact@v5
+        with:
+          name: Packages
+          path: dist
+      - name: Publish package
+        uses: pypa/gh-action-pypi-publish@v1.13.0
+        with:
+          attestations: true

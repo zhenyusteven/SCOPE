@@ -36,7 +36,7 @@ class CodeNode:
     def text_for_completion(
         self,
         include: str = "best",  # "best"|"both"|"summary"|"source"
-        max_chars: int = 10_000
+        max_chars: int = 10000
     ) -> str:
         """
         为补全/生成准备的文本片段：
@@ -65,7 +65,7 @@ class CodeNode:
 
         out = "\n".join(blocks).strip()
         return out[:max_chars]
-    
+     
     def to_dict(self, include_source: bool = True) -> Dict:
         """递归转换为可序列化的 dict"""
         data = {
@@ -238,6 +238,7 @@ class CodeSemanticTree:
           2) 优先遍历高分分支（best-first）
           3) 对每个落点，按 include_order 依次尝试加入文本，直到 token_budget 用尽
         """
+        ## TODO：收集上下文的方式。需要定义搜索方式。
         score_fn = score_fn or self._default_score
 
         # 预计算得分
@@ -299,7 +300,49 @@ class CodeSemanticTree:
             frontier[:0] = sorted_children(nid)
 
         return out
-    
+
+    def generate_summary(
+        self,
+        summarize_fn: Callable[[str], str],
+        include_source_in_leaf: bool = True,
+    ) -> None:
+        """
+        从叶子到根，递归生成每个节点的 summary。
+        summarize_fn: 一个函数 (text:str) -> summary:str
+        """
+        ## TODO:定义更智能的summary 生成策略、逻辑
+        # 拿到所有节点的拓扑顺序（叶子在前）
+        order = list(self.iter_dfs("root"))[::-1]
+
+        for nid in order:
+            node = self.nodes[nid]
+            if node.is_leaf():
+                text = node.text_for_completion(
+                    include="source" if include_source_in_leaf else "best",
+                    max_chars=8000
+                )
+     
+            else:
+                # 汇总所有子节点摘要
+                child_summaries = []
+                for cid in node.children:
+                    child = self.nodes[cid]
+                    if child.summary:
+                        child_summaries.append(f"{child.name}: {child.summary}")
+                text = "\n".join(child_summaries)
+                
+
+            if not text.strip():
+                continue
+
+            try:
+                summary = summarize_fn(text)
+                node.summary = summary
+            except Exception as e:
+                print(f"[WARN] Summary failed for {node.name}: {e}")
+
+
+
     def to_json(self, include_source: bool = True, indent: int = 2) -> str:
         """导出整棵语义树为 JSON 字符串"""
         if not self.root:

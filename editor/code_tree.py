@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Iterable, Callable, Tuple
 from pathlib import Path
 import re
 import json
-
+import os
 from ast_parser import ProjectParser
 
 
@@ -107,14 +107,15 @@ class CodeSemanticTree:
 
     def set_source(self, node_id: str, source: str) -> None:
         self.nodes[node_id].source = source
-
+ 
+    
     # ---- 构建：从 ProjectParser ----
     def build_from_parser(self, parser: "ProjectParser") -> None:
         """
         文件/类为中间节点；函数/方法为叶子；叶子带 source。
         中间节点 summary 留空，后续可由 LLM 填充。
         meta: file/qualname/kind/position 等。
-        """
+        """     
         for file in parser.get_all_files():
             file_id = str(file)
             # 从 parser 拿整个文件源码
@@ -171,6 +172,88 @@ class CodeSemanticTree:
                     else:
                         self.add_child(file_id, leaf)
 
+
+    def build_from_parser_with_folder(self, parser: "ProjectParser") -> None:
+        """
+        文件/类为中间节点；函数/方法为叶子；叶子带 source。
+        遇到每个文件夹路径都生成一个 folder 节点。
+        """
+        all_files = [Path(f) for f in parser.get_all_files()]
+        root_dir = self.parser.root
+        
+        for file in all_files:
+            rel_parts = file.relative_to(root_dir).parts  # 相对路径拆分
+            parent_id = self.root.id
+            path_accum = []
+
+            # === Step 1: 确保每一层文件夹节点存在 ===
+            for part in rel_parts[:-1]:  # 忽略文件名，只处理目录
+                path_accum.append(part)
+                folder_path = str(Path(*path_accum))
+                if folder_path not in self.nodes:
+                    folder_node = CodeNode(
+                        id=folder_path,
+                        name=part,
+                        kind="folder",
+                        source=None,
+                        summary=None,
+                        meta={"path": str(Path(root_dir) / Path(*path_accum))},
+                    )
+                    self.add_child(parent_id, folder_node)
+                parent_id = folder_path
+
+            # === Step 2: 添加文件节点 ===
+            file_id = str(file)
+            file_src = parser._sources.get(file, file.read_text(encoding="utf-8"))
+            file_node = CodeNode(
+                id=file_id,
+                name=file.name,
+                kind="file",
+                source=file_src,
+                meta={"file": str(file)},
+            )
+            self.add_child(parent_id, file_node)
+
+            # === Step 3: 添加类与函数节点 ===
+            class_ids: Dict[str, str] = {}
+            for rec in parser.list_symbols(file):
+                node_id = f"{file_id}::{rec.qualname}"
+                src = parser.get_source_with_context(rec, before=0, after=0)
+
+                if rec.kind == "class":
+                    cls = CodeNode(
+                        id=node_id,
+                        name=rec.qualname,
+                        kind="class",
+                        source=src,
+                        meta={
+                            "file": str(file),
+                            "qualname": rec.qualname,
+                            "position": (rec.position.start_line, rec.position.end_line),
+                        },
+                    )
+                    self.add_child(file_id, cls)
+                    class_ids[rec.qualname] = node_id
+
+                elif rec.kind in ("function", "method"):
+                    leaf = CodeNode(
+                        id=node_id,
+                        name=rec.qualname,
+                        kind=rec.kind,
+                        source=src,
+                        meta={
+                            "file": str(file),
+                            "qualname": rec.qualname,
+                            "position": (rec.position.start_line, rec.position.end_line),
+                        },
+                    )
+                    if rec.kind == "method":
+                        cls_name = ".".join(rec.qualname.split(".")[:-1])
+                        parent_id_ = class_ids.get(cls_name, file_id)
+                    else:
+                        parent_id_ = file_id
+                    self.add_child(parent_id_, leaf)
+
     # ---- 遍历/导航 ----
     def ancestors(self, node_id: str) -> List[str]:
         out: List[str] = []
@@ -199,21 +282,8 @@ class CodeSemanticTree:
     # ---- 相关性打分（可替换）----
     @staticmethod
     def _default_score(query: str, node: CodeNode) -> float:
-        """
-        轻量关键字重叠得分：在 name + summary + (叶子)source 中匹配 query 的 token。
-        """
-        q = [t for t in re.split(r"\W+", query.lower()) if t]
-        hay = " ".join([
-            node.name or "",
-            (node.summary or ""),
-            (node.source or "")[:4000]  # 防止极长文本影响速度
-        ]).lower()
-        if not q or not hay:
-            return 0.0
-        hit = sum(hay.count(t) for t in q)
-        # 适当提升叶子优先级
-        leaf_bonus = 0.5 if node.is_leaf() else 0.0
-        return hit + leaf_bonus
+        # place holder
+        return 1.0 if query.lower() in node.name.lower() else 0.0
 
     @staticmethod
     def _approx_tokens(text: str) -> int:
@@ -340,7 +410,6 @@ class CodeSemanticTree:
                 node.summary = summary
             except Exception as e:
                 print(f"[WARN] Summary failed for {node.name}: {e}")
-
 
 
     def to_json(self, include_source: bool = True, indent: int = 2) -> str:

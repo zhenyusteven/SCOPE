@@ -121,11 +121,19 @@ class CodeNode:
 # ============ Tree ============
 
 class CodeSemanticTree:
-    def __init__(self, parser: ProjectParser, project_name: str = "Project"):
-        self.parser = parser
-        self.nodes: Dict[str, CodeNode] = {}
-        self.root = CodeNode(id="root", name=project_name, kind="project")
-        self.nodes[self.root.id] = self.root
+    def __init__(self, parser: ProjectParser = None, tree_path: str = None, project_name: str = "Project"):
+        assert not (parser is None and tree_path is None), "Either parser or tree_path must be provided"
+        if parser is not None:
+            self.parser = parser
+            self.nodes: Dict[str, CodeNode] = {}
+            self.root = CodeNode(id="root", name=project_name, kind="project")
+            self.nodes[self.root.id] = self.root
+        else:
+            loaded = self.create_from_json(tree_path)
+            self.parser = None
+            self.nodes = loaded.nodes
+            self.root = loaded.root
+        
         
     # ---- 基础增删改查 ----
     def add_node(self, node: CodeNode) -> None:
@@ -481,6 +489,43 @@ class CodeSemanticTree:
         with open(path, "w", encoding="utf-8") as f:
             f.write(json_str)
         print(f"Tree saved to {path}")
+
+    @classmethod
+    def create_from_dict(cls, data: Dict[str, Any]) -> "CodeSemanticTree":
+        """Create a CodeSemanticTree from a dict"""
+
+        def build_subtree(node_dict: Dict[str, Any], tree: "CodeSemanticTree") -> CodeNode:
+            node = CodeNode(
+                id=node_dict["id"],
+                name=node_dict.get("name", ""),
+                kind=node_dict.get("kind", ""),
+                summary=node_dict.get("summary"),
+                source=node_dict.get("source"),
+                meta=node_dict.get("meta") or {},
+            )
+            tree.nodes[node.id] = node
+
+            for child_dict in node_dict.get("children", []):
+                child_node = build_subtree(child_dict, tree)
+                node.add_child(child_node)
+
+            return node
+
+        tree = cls.__new__(cls)
+        tree.parser = None
+        tree.nodes = {}
+        tree.root = build_subtree(data, tree)
+        if tree.root.id != "root":
+            tree.nodes["root"] = tree.root
+        return tree
+
+    @classmethod
+    def create_from_json(cls, json_path: str) -> "CodeSemanticTree":
+        """Create a CodeSemanticTree from a JSON file"""
+        with open(json_path, "r", encoding="utf-8") as f:
+            json_str = f.read()
+        data = json.loads(json_str)
+        return cls.create_from_dict(data)
 
     def edit_symbol(
         self,

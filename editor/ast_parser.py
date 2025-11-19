@@ -110,7 +110,8 @@ class ProjectParser:
     """
 
     def __init__(self, root: Path | str) -> None:
-        self.root = Path(root)
+        # Normalize so relative paths behave the same as absolute
+        self.root = Path(root).expanduser().resolve()
         if not self.root.exists():
             raise FileNotFoundError(self.root)
         self._index: Dict[Path, Dict[str, SymbolRecord]] = {}

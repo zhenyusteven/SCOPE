@@ -6,10 +6,47 @@ import re
 import json
 import os
 from ast_parser import ProjectParser
+import time
+from openai import OpenAI
+import textwrap
+from tqdm import tqdm
 
-
-# ============ Node ============
-
+def llm_summarize(text: str) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        try:
+            client = OpenAI(api_key=api_key) 
+            prompt = textwrap.dedent(f'''
+            You are a static-code summarization assistant. 
+            Given code or child summaries, produce a *compact, machine-readable* JSON object describing the node.
+            Required fields:
+            - "role": short label (e.g., "utility fn", "stateful class", "config file", "API wrapper")
+            - "purpose": 1-2 sentences on what this node does
+            - "deps": "internal": referenced project functions/classes/modules, "external": imported libraries
+            - "contracts": key assumptions or pre/post conditions
+            - "effects": side effects (I/O, logs, state)
+            - "errors": edge cases or exceptions
+            - "risks": things an edit must not break
+            - "links": any related nodes
+            - "sum": 2-3 sentence natural summary
+            - "conf": confidence (0–1)
+            Be extremely concise and strictly output JSON only.
+            {text}
+            ''')
+            
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=400,
+                temperature=0.2,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[WARN] OpenAI summarization failed: {e}")
+    else:
+        print("no openai key found")
+        return "NO_API_KEY"
+    
 @dataclass
 class CodeNode:
     """
@@ -77,7 +114,7 @@ class CodeNode:
             "meta": self.meta,
         }
         if include_source and self.source:
-            data["source"] = self.source[:50] + ("..." if len(self.source) > 50 else "")
+            data["source"] = self.source #[:50] + ("..." if len(self.source) > 50 else "")
 
         return data
 
@@ -107,6 +144,18 @@ class CodeSemanticTree:
 
     def set_source(self, node_id: str, source: str) -> None:
         self.nodes[node_id].source = source
+
+    def _normalize_file_path(self, file_path: str | Path) -> Tuple[str, Path]:
+        """
+        Normalize incoming paths so IDs in the tree remain relative to the parser root.
+        """
+        abs_path = self.parser._abs(file_path)
+        try:
+            rel_path = abs_path.relative_to(self.parser.root)
+            return rel_path.as_posix(), abs_path
+        except ValueError:
+            # File is outside the project root; fall back to absolute id.
+            return abs_path.as_posix(), abs_path
  
     
     # ---- 构建：从 ProjectParser ----
@@ -117,22 +166,22 @@ class CodeSemanticTree:
         meta: file/qualname/kind/position 等。
         """     
         for file in parser.get_all_files():
-            file_id = str(file)
+            file_id, abs_file = self._normalize_file_path(file)
             # 从 parser 拿整个文件源码
-            file_src = parser._sources.get(file, file.read_text(encoding="utf-8"))
+            file_src = parser._sources.get(abs_file, abs_file.read_text(encoding="utf-8"))
             file_node = CodeNode(
                 id=file_id,
-                name=Path(file).name,
+                name=Path(abs_file).name,
                 kind="file",
                 source=file_src,       
-                meta={"file": str(file)},
+                meta={"file": file_id},
             )
             self.add_child(self.root.id, file_node)
 
             # 预先缓存类节点，便于方法挂载
             class_ids: Dict[str, str] = {}
 
-            for rec in parser.list_symbols(file):
+            for rec in parser.list_symbols(abs_file):
                 node_id = f"{file_id}::{rec.qualname}"
                 src = parser.get_source_with_context(rec, before=0, after=0)
                 if rec.kind == "class":
@@ -143,7 +192,7 @@ class CodeSemanticTree:
                         source=src,
                         summary=None,
                         meta={
-                            "file": str(file),
+                            "file": file_id,
                             "qualname": rec.qualname,
                             "position": (rec.position.start_line, rec.position.end_line),
                         },
@@ -159,7 +208,7 @@ class CodeSemanticTree:
                         kind=rec.kind,
                         source=src,
                         meta={
-                            "file": str(file),
+                            "file": file_id,
                             "qualname": rec.qualname,
                             "position": (rec.position.start_line, rec.position.end_line),
                         },
@@ -178,18 +227,17 @@ class CodeSemanticTree:
         文件/类为中间节点；函数/方法为叶子；叶子带 source。
         遇到每个文件夹路径都生成一个 folder 节点。
         """
-        all_files = [Path(f) for f in parser.get_all_files()]
         root_dir = self.parser.root
-        
-        for file in all_files:
-            rel_parts = file.relative_to(root_dir).parts  # 相对路径拆分
+        for file in parser.get_all_files():
+            file_id, abs_file = self._normalize_file_path(file)
+            rel_parts = abs_file.relative_to(root_dir).parts  # 相对路径拆分
             parent_id = self.root.id
             path_accum = []
 
             # === Step 1: 确保每一层文件夹节点存在 ===
             for part in rel_parts[:-1]:  # 忽略文件名，只处理目录
                 path_accum.append(part)
-                folder_path = str(Path(*path_accum))
+                folder_path = Path(*path_accum).as_posix()
                 if folder_path not in self.nodes:
                     folder_node = CodeNode(
                         id=folder_path,
@@ -197,26 +245,25 @@ class CodeSemanticTree:
                         kind="folder",
                         source=None,
                         summary=None,
-                        meta={"path": str(Path(root_dir) / Path(*path_accum))},
+                        meta={"path": folder_path},
                     )
                     self.add_child(parent_id, folder_node)
                 parent_id = folder_path
 
             # === Step 2: 添加文件节点 ===
-            file_id = str(file)
-            file_src = parser._sources.get(file, file.read_text(encoding="utf-8"))
+            file_src = parser._sources.get(abs_file, abs_file.read_text(encoding="utf-8"))
             file_node = CodeNode(
                 id=file_id,
-                name=file.name,
+                name=Path(abs_file).name,
                 kind="file",
                 source=file_src,
-                meta={"file": str(file)},
+                meta={"file": file_id},
             )
             self.add_child(parent_id, file_node)
 
             # === Step 3: 添加类与函数节点 ===
             class_ids: Dict[str, str] = {}
-            for rec in parser.list_symbols(file):
+            for rec in parser.list_symbols(abs_file):
                 node_id = f"{file_id}::{rec.qualname}"
                 src = parser.get_source_with_context(rec, before=0, after=0)
 
@@ -227,7 +274,7 @@ class CodeSemanticTree:
                         kind="class",
                         source=src,
                         meta={
-                            "file": str(file),
+                            "file": file_id,
                             "qualname": rec.qualname,
                             "position": (rec.position.start_line, rec.position.end_line),
                         },
@@ -242,7 +289,7 @@ class CodeSemanticTree:
                         kind=rec.kind,
                         source=src,
                         meta={
-                            "file": str(file),
+                            "file": file_id,
                             "qualname": rec.qualname,
                             "position": (rec.position.start_line, rec.position.end_line),
                         },
@@ -370,10 +417,10 @@ class CodeSemanticTree:
             frontier[:0] = sorted_children(nid)
 
         return out
-
+    
     def generate_summary(
         self,
-        summarize_fn: Callable[[str], str],
+        summarize_fn: Callable[[str], str] = llm_summarize,
         include_source_in_leaf: bool = True,
     ) -> None:
         """
@@ -384,14 +431,10 @@ class CodeSemanticTree:
         # 拿到所有节点的拓扑顺序（叶子在前）
         order = list(self.iter_dfs("root"))[::-1]
 
-        for nid in order:
+        for nid in tqdm(order):
             node = self.nodes[nid]
             if node.is_leaf():
-                text = node.text_for_completion(
-                    include="source" if include_source_in_leaf else "best",
-                    max_chars=8000
-                )
-     
+                continue
             else:
                 # 汇总所有子节点摘要
                 child_summaries = []
@@ -399,9 +442,13 @@ class CodeSemanticTree:
                     child = self.nodes[cid]
                     if child.summary:
                         child_summaries.append(f"{child.name}: {child.summary}")
+                    else:
+                        inner_mode = "source" if include_source_in_leaf else "best"
+                        child_summaries.append(
+                            f"{child.name}: {child.text_for_completion(include=inner_mode, max_chars=8000)}"
+                        )
                 text = "\n".join(child_summaries)
                 
-
             if not text.strip():
                 continue
 
@@ -410,6 +457,8 @@ class CodeSemanticTree:
                 node.summary = summary
             except Exception as e:
                 print(f"[WARN] Summary failed for {node.name}: {e}")
+            print("Summary",node.summary)
+
 
 
     def to_json(self, include_source: bool = True, indent: int = 2) -> str:
@@ -442,35 +491,34 @@ class CodeSemanticTree:
         mode: str = "insert",
     ):
         """编辑树中一个函数/方法节点，并同步 parser 与树"""
-        file = str(Path(file_path))
-        record, new_src = self.parser.edit_symbol(file, symbol_path, relative_line, new_code, mode)
+        file_id, abs_file = self._normalize_file_path(file_path)
+        record, new_src = self.parser.edit_symbol(abs_file, symbol_path, relative_line, new_code, mode)
 
         # 更新 parser 缓存（parser 自己已经做了）
         # 更新 file 层节点源码
-        file_node = self.nodes.get(file)
+        file_node = self.nodes.get(file_id)
         if file_node:
             file_node.source = new_src
 
         # 更新目标函数节点的源码
-        target_id = f"{file}::{symbol_path}"
+        target_id = f"{file_id}::{symbol_path}"
         if target_id in self.nodes:
             func_node = self.nodes[target_id]
             func_node.source = self.parser.get_source_with_context(record)
         else:
             # 若树中没该节点（新增函数），则重建该文件的分支
-            self._rebuild_file_branch(file)
+            self._rebuild_file_branch(abs_file)
 
-    def _rebuild_file_branch(self, file_path: str):
+    def _rebuild_file_branch(self, file_path: str | Path):
         """重建某个文件的节点分支"""
-        file = Path(file_path)
-        file_id = str(file)
+        file_id, abs_file = self._normalize_file_path(file_path)
         # 先清理旧的 file 子树
         to_delete = [nid for nid in self.nodes if nid.startswith(file_id + "::")]
         for nid in to_delete:
             self.nodes.pop(nid, None)
 
         # 重新解析并挂载子节点
-        recs = self.parser.list_symbols(file)
+        recs = self.parser.list_symbols(abs_file)
         class_nodes = {}
 
         for rec in recs:
@@ -481,6 +529,11 @@ class CodeSemanticTree:
                     name=rec.qualname,
                     kind="class",
                     source=self.parser.get_source(rec),
+                    meta={
+                        "file": file_id,
+                        "qualname": rec.qualname,
+                        "position": (rec.position.start_line, rec.position.end_line),
+                    },
                 )
                 self.add_child(file_id, cls_node)
                 class_nodes[rec.qualname] = cls_node
@@ -491,6 +544,11 @@ class CodeSemanticTree:
                     name=rec.qualname,
                     kind=rec.kind,
                     source=src,
+                    meta={
+                        "file": file_id,
+                        "qualname": rec.qualname,
+                        "position": (rec.position.start_line, rec.position.end_line),
+                    },
                 )
                 if rec.kind == "method":
                     cls_name = ".".join(rec.qualname.split(".")[:-1])

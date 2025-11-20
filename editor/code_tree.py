@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import json
 import os
-from ast_parser import ProjectParser
+from .ast_parser import ProjectParser
 import time
 from openai import OpenAI
 import textwrap

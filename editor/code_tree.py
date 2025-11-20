@@ -1,11 +1,16 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Iterable, Callable, Tuple
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
 import json
 import os
-from .ast_parser import ProjectParser
+try:
+    from .ast_parser import ProjectParser
+except ImportError:
+    from ast_parser import ProjectParser
 import time
 from openai import OpenAI
 import textwrap
@@ -430,6 +435,7 @@ class CodeSemanticTree:
         self,
         summarize_fn: Callable[[str], str] = llm_summarize,
         include_source_in_leaf: bool = True,
+        max_workers: int = 10,
     ) -> None:
         """
         从叶子到根，递归生成每个节点的 summary。
@@ -438,34 +444,70 @@ class CodeSemanticTree:
         ## TODO:定义更智能的summary 生成策略、逻辑
         # 拿到所有节点的拓扑顺序（叶子在前）
         order = list(self.iter_dfs("root"))[::-1]
+        work_nodes = [nid for nid in order if not self.nodes[nid].is_leaf()]
+        if not work_nodes:
+            return
 
-        for nid in tqdm(order):
+        # Calculate height for better parallelism
+        height: Dict[str, int] = {}
+        for nid in order:
             node = self.nodes[nid]
             if node.is_leaf():
-                continue
+                height[nid] = 0
             else:
-                # 汇总所有子节点摘要
-                child_summaries = []
-                for cid in node.children:
-                    child = self.nodes[cid]
-                    if child.summary:
-                        child_summaries.append(f"{child.name}: {child.summary}")
-                    else:
-                        inner_mode = "source" if include_source_in_leaf else "best"
-                        child_summaries.append(
-                            f"{child.name}: {child.text_for_completion(include=inner_mode, max_chars=8000)}"
-                        )
-                text = "\n".join(child_summaries)
-                
-            if not text.strip():
-                continue
+                child_heights = [height.get(cid, 0) for cid in node.children]
+                height[nid] = 1 + (max(child_heights) if child_heights else 0)
 
+        positions = {nid: idx for idx, nid in enumerate(order)}
+        levels: Dict[int, List[str]] = defaultdict(list)
+        for nid in work_nodes:
+            levels[height[nid]].append(nid)
+        for level_nodes in levels.values():
+            level_nodes.sort(key=lambda nid: positions[nid])
+
+        def _gather_child_text(node: CodeNode) -> str:
+            child_summaries: List[str] = []
+            inner_mode = "source" if include_source_in_leaf else "best"
+            for cid in node.children:
+                child = self.nodes[cid]
+                if child.summary:
+                    child_summaries.append(f"{child.name}: {child.summary}")
+                else:
+                    child_summaries.append(
+                        f"{child.name}: {child.text_for_completion(include=inner_mode, max_chars=8000)}"
+                    )
+            return "\n".join(child_summaries)
+
+        def _execute(nid: str, text: str) -> Tuple[str, Optional[str], Optional[Exception]]:
             try:
-                summary = summarize_fn(text)
-                node.summary = summary
-            except Exception as e:
-                print(f"[WARN] Summary failed for {node.name}: {e}")
-            print("Summary",node.summary)
+                return nid, summarize_fn(text), None
+            except Exception as exc:
+                return nid, None, exc
+
+        pbar = tqdm(total=len(work_nodes))
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers or 1) as executor:
+                for depth in sorted(levels.keys()):
+                    futures = []
+                    for nid in levels[depth]:
+                        node = self.nodes[nid]
+                        text = _gather_child_text(node)
+                        if not text.strip():
+                            pbar.update(1)
+                            continue
+                        futures.append(executor.submit(_execute, nid, text))
+
+                    for fut in as_completed(futures):
+                        nid, summary, error = fut.result()
+                        node = self.nodes[nid]
+                        if error is None and summary is not None:
+                            node.summary = summary
+                            print("Summary", node.summary)
+                        else:
+                            print(f"[WARN] Summary failed for {node.name}: {error}")
+                        pbar.update(1)
+        finally:
+            pbar.close()
 
 
 

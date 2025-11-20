@@ -46,7 +46,7 @@ def run_example(project_path: str | Path, summarize: bool = False):
             if shown >= 10:
                 break
 
-    out_json = Path("tree_4o_mini_no_leaf.json")
+    out_json = Path("optimized_gen.json")
     tree.save_json(str(out_json), include_source=True)
     
 if __name__ == "__main__":

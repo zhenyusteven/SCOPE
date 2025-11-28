@@ -266,14 +266,14 @@ def generate_patch_from_context(
         except Exception as exc:
             logger.warning("Failed to read context file %s: %s", context_file, exc)
     
-    tree_data = None
-    if tree_file.exists():
-        try:
-            tree_data = json.loads(tree_file.read_text())
-        except Exception as exc:
-            logger.warning("Failed to read tree file %s: %s", tree_file, exc)
+    # tree_data = None
+    # if tree_file.exists():
+    #     try:
+    #         tree_data = json.loads(tree_file.read_text())
+    #     except Exception as exc:
+    #         logger.warning("Failed to read tree file %s: %s", tree_file, exc)
     
-    prompt = create_prompt(instance, tree_data, context_data)
+    prompt = create_prompt(instance, context_data)
     
     # Call LLM to generate patch
     try:
@@ -446,11 +446,12 @@ def generate_context(instances: list[dict[str, Any]], tree_dir: Path, context_di
         task_name =tree.nodes["root"].name
         task_description = inst.get("problem_statement", "")
         context_generator = RecapSWE(task_name=task_name, task_description=task_description, fewshot_example="", code_tree=tree)
-        context = context_generator.run()
+        context, code_patch = context_generator.run()
 
         context_data = {
             "instance_id": inst["instance_id"],
             "context": context,
+            "code_patch": code_patch,
         }
         context_file.write_text(json.dumps(context_data, indent=2))
         logger.info("Generated context for %s", inst["instance_id"])

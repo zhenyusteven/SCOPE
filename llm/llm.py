@@ -13,9 +13,7 @@ class RecapLLM(ABC):
         """
         pass
 
-def create_prompt(instance: dict[str, Any], 
-    tree_data: dict[str, Any], 
-    context_data: dict[str, Any]) -> str:
+def create_prompt(instance: dict[str, Any], context_data: dict[str, Any]) -> str:
     """Create a prompt for the LLM given an instance, tree, and context.
     """
     problem_statement = instance.get("problem_statement", "")
@@ -23,8 +21,8 @@ def create_prompt(instance: dict[str, Any],
     prompt_parts.append("Generate a patch to fix the following issue:\n\n")
     prompt_parts.append(f"Problem Statement:\n{problem_statement}\n\n")
     prompt_parts.append(f"Relevant Context for generating the patch:\n{context_data['context']}\n\n")
-    prompt_parts.append(f"Code tree data: {json.dumps(tree_data, indent=2)}\n\n")
-    prompt_parts.append("Generate a unified diff patch that fixes the issue. Only output the patch, no additional explanation.")
+    prompt_parts.append(f"Relevant Code Source for fixing the issue:\n{context_data['code_patch']}\n\n")
+    prompt_parts.append("Generate a unified diff patch using the relevant context and code source to fix the issue. Only output the patch, no additional explanation.")
     return "".join(prompt_parts)
 
 

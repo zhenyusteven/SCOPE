@@ -55,6 +55,13 @@ docker run --rm \
   scope-swe trees \
     --subset verified --split test --limit 2 \
 
+# Generate context
+docker run --rm \
+  -v "$PWD/data/swe_bench:/app/data/swe_bench" \
+  --env-file .env \
+  scope-swe context \
+    --subset verified --split test --limit 2 \
+
 # Generate predictions and submit via sb-cli
 docker run --rm \
   -v "$PWD/data/swe_bench:/app/data/swe_bench" \

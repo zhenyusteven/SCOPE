@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from editor.ast_parser import ProjectParser
 from editor.code_tree import CodeSemanticTree
 from agent.recap import RecapSWE
+from llm.llm import create_prompt, create_llm
 
 SWE_BENCH_DATASETS = {
     "full": "princeton-nlp/SWE-Bench",
@@ -187,7 +188,7 @@ def create_prediction_file(instance: dict[str, Any], patch: str, run_name: str, 
     directory.mkdir(parents=True, exist_ok=True)
     pred_path = directory / f"{instance['instance_id']}.pred"
     datum = {
-        "model_name_or_path": run_name,
+        "code_model_or_path": run_name,
         "instance_id": instance["instance_id"],
         "model_patch": patch,
     }
@@ -249,6 +250,41 @@ def generate_patch_from_tree(instance: dict[str, Any], tree_file: Path) -> str:
     _ = _problem_statement
     return instance.get("patch") or ""
 
+def generate_patch_from_context(
+    instance: dict[str, Any], 
+    tree_file: Path, 
+    context_file: Path,
+    code_model: str = "gpt-4o-mini",
+    **llm_kwargs
+) -> str:
+    """Generate a patch using context and the SWE-bench problem.
+    """
+    context_data = None
+    if context_file.exists():
+        try:
+            context_data = json.loads(context_file.read_text())
+        except Exception as exc:
+            logger.warning("Failed to read context file %s: %s", context_file, exc)
+    
+    tree_data = None
+    if tree_file.exists():
+        try:
+            tree_data = json.loads(tree_file.read_text())
+        except Exception as exc:
+            logger.warning("Failed to read tree file %s: %s", tree_file, exc)
+    
+    prompt = create_prompt(instance, tree_data, context_data)
+    
+    # Call LLM to generate patch
+    try:
+        llm = create_llm(code_model, **llm_kwargs)
+        patch = llm.generate(prompt)
+        logger.info("patch: %s", patch)
+        return patch
+    except Exception as exc:
+        logger.error("Failed to generate patch using LLM: %s", exc)
+        return ""
+
 
 def evaluate(
     instances: list[dict[str, Any]],
@@ -257,10 +293,13 @@ def evaluate(
     *,
     patches_dir: Path | None,
     tree_dir: Path,
+    context_dir: Path,
     subset: str,
     split: str,
     run_sb: bool,
     output_dir: Path,
+    code_model: str = "gpt-4o-mini",
+    **llm_kwargs,
 ) -> Path:
     for inst in instances:
         if patches_dir:
@@ -271,7 +310,9 @@ def evaluate(
             patch_text = patch_file.read_text()
         else:
             tree_file = tree_dir / f"{inst['instance_id']}.json"
-            patch_text = generate_patch_from_tree(inst, tree_file)
+            # patch_text = generate_patch_from_tree(inst, tree_file)
+            context_file = context_dir / f"{inst['instance_id']}.json"
+            patch_text = generate_patch_from_context(inst, tree_file, context_file, code_model, **llm_kwargs)
         pred_dir = predictions_dir / inst["instance_id"]
         create_prediction_file(inst, patch_text, run_name, pred_dir)
 
@@ -311,14 +352,32 @@ def add_tree_args(parser: argparse.ArgumentParser) -> None:
 def add_context_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--context-dir", type=Path, default=DEFAULT_DATA_DIR / "context")    
 
-def add_eval_args(parser: argparse.ArgumentParser, *, include_tree_dir: bool = True) -> None:
+def add_eval_args(parser: argparse.ArgumentParser, *, include_tree_dir: bool = True, include_context_dir: bool = True) -> None:
     if include_tree_dir:
         parser.add_argument("--trees-dir", type=Path, default=DEFAULT_DATA_DIR / "trees")
+    if include_context_dir:
+        parser.add_argument("--context-dir", type=Path, default=DEFAULT_DATA_DIR / "context")
     parser.add_argument("--predictions-dir", type=Path, default=DEFAULT_DATA_DIR / "predictions")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATA_DIR / "runs")
     parser.add_argument("--run-name", default="scope-ground-truth")
     parser.add_argument("--run-sb-cli", action="store_true", help="Submit preds.json via sb-cli")
     parser.add_argument("--patches-dir", type=Path, help="Directory with <instance_id>.patch files")
+    parser.add_argument(
+        "--code-model",
+        default="gpt-4o-mini",
+        help="LLM model name to use for patch generation (e.g., 'gpt-4o-mini')"
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for LLM generation"
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        type=int,
+        help="Maximum tokens for LLM generation"
+    )
     
 
 
@@ -354,7 +413,7 @@ def get_parser() -> argparse.ArgumentParser:
     add_instance_args(pipeline_parser)
     add_tree_args(pipeline_parser)
     add_context_args(pipeline_parser)
-    add_eval_args(pipeline_parser, include_tree_dir=False)
+    add_eval_args(pipeline_parser, include_tree_dir=False, include_context_dir=False)
 
     return parser
 
@@ -403,16 +462,27 @@ def run_context_generation_stage(args, instances) -> None:
 def run_evaluation_stage(args, instances) -> Path:
     patches_dir = args.patches_dir
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare LLM kwargs
+    llm_kwargs = {}
+    if hasattr(args, "llm_temperature"):
+        llm_kwargs["temperature"] = args.llm_temperature
+    if hasattr(args, "llm_max_tokens") and args.llm_max_tokens:
+        llm_kwargs["max_tokens"] = args.llm_max_tokens
+    
     return evaluate(
         instances,
         predictions_dir=args.predictions_dir,
         run_name=args.run_name,
         patches_dir=patches_dir,
         tree_dir=args.trees_dir,
+        context_dir=args.context_dir,
         subset=args.subset,
         split=args.split,
         run_sb=args.run_sb_cli,
         output_dir=args.output_dir,
+        code_model=getattr(args, "code_model", "gpt-4o-mini"),
+        **llm_kwargs,
     )
 
 

@@ -188,7 +188,7 @@ def create_prediction_file(instance: dict[str, Any], patch: str, run_name: str, 
     directory.mkdir(parents=True, exist_ok=True)
     pred_path = directory / f"{instance['instance_id']}.pred"
     datum = {
-        "code_model_or_path": run_name,
+        "model_name_or_path": run_name,
         "instance_id": instance["instance_id"],
         "model_patch": patch,
     }

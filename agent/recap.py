@@ -30,7 +30,7 @@ class RecapSWE(ABC):
         self.task_description = task_description
         self.fewshot_example = fewshot_example
 
-        self.llm = OpenAI(api_key=OPENAI_API_KEY)
+        self.llm = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", OPENAI_API_KEY))
 
 
     # def initialize_code_tree(self, project_root: str | Path) -> None:

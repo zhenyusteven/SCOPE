@@ -13,9 +13,10 @@ from editor.ast_parser import ProjectParser
 from editor.code_tree import CodeSemanticTree, CodeNode
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
+from dotenv import load_dotenv
 
+load_dotenv()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-
 
 class LLMResponse(BaseModel):
     context: str

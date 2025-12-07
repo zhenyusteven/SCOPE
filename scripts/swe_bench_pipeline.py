@@ -350,7 +350,9 @@ def add_tree_args(parser: argparse.ArgumentParser) -> None:
     )
 
 def add_context_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--trees-dir", type=Path, default=DEFAULT_DATA_DIR / "trees")
     parser.add_argument("--context-dir", type=Path, default=DEFAULT_DATA_DIR / "context")    
+    parser.add_argument("--skip-existing", action="store_true", help="Avoid regenerating context that already exists", default=True)
 
 def add_eval_args(parser: argparse.ArgumentParser, *, include_tree_dir: bool = True, include_context_dir: bool = True) -> None:
     if include_tree_dir:

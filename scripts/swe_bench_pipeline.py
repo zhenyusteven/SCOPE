@@ -349,10 +349,11 @@ def add_tree_args(parser: argparse.ArgumentParser) -> None:
         help="Delete the repository folder after a tree has been written or found", default=True,
     )
 
-def add_context_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--trees-dir", type=Path, default=DEFAULT_DATA_DIR / "trees")
-    parser.add_argument("--context-dir", type=Path, default=DEFAULT_DATA_DIR / "context")    
-    parser.add_argument("--skip-existing", action="store_true", help="Avoid regenerating context that already exists", default=True)
+def add_context_args(parser: argparse.ArgumentParser, *, include_tree_dir: bool = False) -> None:
+    if include_tree_dir:
+        parser.add_argument("--trees-dir", type=Path, default=DEFAULT_DATA_DIR / "trees")
+        parser.add_argument("--skip-existing", action="store_true", help="Avoid regenerating context that already exists", default=True)
+    parser.add_argument("--context-dir", type=Path, default=DEFAULT_DATA_DIR / "context")
 
 def add_eval_args(parser: argparse.ArgumentParser, *, include_tree_dir: bool = True, include_context_dir: bool = True) -> None:
     if include_tree_dir:
@@ -405,7 +406,7 @@ def get_parser() -> argparse.ArgumentParser:
 
     context_parser = subparsers.add_parser("context", help="Generate context for instances")
     add_instance_args(context_parser)
-    add_context_args(context_parser)
+    add_context_args(context_parser, include_tree_dir=True)
 
     eval_parser = subparsers.add_parser("evaluate", help="Create predictions and optionally run sb-cli evaluation")
     add_instance_args(eval_parser)

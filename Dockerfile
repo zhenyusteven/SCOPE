@@ -11,7 +11,7 @@ WORKDIR /app
 COPY . /app
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir libcst openai tqdm datasets pandas pyarrow sb-cli
+    && pip install --no-cache-dir libcst openai tqdm datasets pandas pyarrow sb-cli python-dotenv
 
 ENTRYPOINT ["python", "scripts/swe_bench_pipeline.py"]
 CMD ["--help"]

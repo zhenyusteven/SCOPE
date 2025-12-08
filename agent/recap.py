@@ -23,6 +23,7 @@ class LLMResponse(BaseModel):
     code_patch: str
     sorted_children: List[str]
     is_complete: bool = False
+    confidence: float = 0.0  # model-estimated confidence [0,1] that current context is sufficient
 
 class RecapSWE(ABC):
     def __init__(self, task_name: str, task_description: str, fewshot_example: str, code_tree: CodeSemanticTree,
@@ -31,6 +32,8 @@ class RecapSWE(ABC):
         self.task_name = task_name
         self.task_description = task_description
         self.fewshot_example = fewshot_example
+        self.max_branching = 3  # explore top-k children instead of single greedy branch
+        self.complete_conf_threshold = 0.8  # require confidence to early-stop
 
         self.llm = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -62,7 +65,8 @@ class RecapSWE(ABC):
             '  "context": "<updated context string>",\n'
             '  "code_patch": "<actual code as a string>",\n'
             '  "sorted_children": ["<child_id>", ...],\n'
-            '  "is_complete": <boolean: true or false>\n'
+            '  "is_complete": <boolean: true or false>,\n'
+            '  "confidence": <number between 0 and 1 indicating how confident you are the current context/code_patch solve the task>\n'
             "}\n"
             f'Only include ids from this list: [{allowed}].'
         )
@@ -82,7 +86,7 @@ class RecapSWE(ABC):
         f"The code patch at this node is {node.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
         f"Update the context by adding precise metadata that could help locate or modify the bug (file path, function/class name, approximate line span, why it matters, and the hypothesized change if any). Keep it concise but explicit."
-        f"You can see these children nodes: {self._format_children(children)}. Please sort the children nodes from the most optimally relavant one to the least to accomplish the task."
+        f"You can see these children nodes: {self._format_children(children)}. Please sort the children nodes from the most optimally relavant one to the least to accomplish the task, and provide confidence for the current node."
         f"If the node summary is clearly unrelated to the task, stop exploring this branch by returning an empty sorted_children list."
         f"\n{self._json_response_instruction(children)}"
         f"Set is_complete to true only if you think the current context and code patch are sufficient to achieve the task; otherwise, set is_complete to false.")
@@ -94,7 +98,7 @@ class RecapSWE(ABC):
         f"The code patch at this node is {node.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
         f"Ensure the context includes the most promising file/function/line locations and suspected edits gathered so far; merge or drop fluff to stay concise."
-        f"Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
+        f"Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task, and provide confidence for the current node."
         f"\n{self._json_response_instruction(remaining_ids)}")
         return prompt
 
@@ -104,7 +108,7 @@ class RecapSWE(ABC):
         f"Previous context is {context} and relevant code patch is {code_patch}."
         f"Ensure the context highlights concrete locations (file paths, functions, line spans) and suggested modifications most relevant to the task."
         "Now you will return to the parent level. There is no remaining nodes. Check if the current context can help to achieve the task."
-        "If yes, set is_complete to true; otherwise, set is_complete to false."
+        "If yes, set is_complete to true; otherwise, set is_complete to false. Provide confidence for the current node."
         f"\n{self._json_response_instruction([])}")
         return prompt
 
@@ -114,8 +118,7 @@ class RecapSWE(ABC):
         f"The code patch at this node is {leaf.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
         f"Determine whether this leaf contributes to solving task {self.task_name}; if it does, update the context and code patch accordingly, including file path, function/class, line span, and hypothesized fix."
-        f"Determine whether this leaf contributes to solving task {self.task_name}; if it does, update the context and code patch accordingly."
-        f"Now you are back at parent {parent.name}. Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
+        f"Now you are back at parent {parent.name}. Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task, and provide confidence for the current node."
         f"If there are no remaining nodes, check if the current context can help to achieve the task."
         f"If yes, set is_complete to true; otherwise, set is_complete to false."
         f"\n{self._json_response_instruction(remaining_ids)}")
@@ -128,7 +131,7 @@ class RecapSWE(ABC):
         f"Please determine if this node is helpful for completing task {self.task_name}. If it is, update the context and code patch."
         f"If useful, add precise metadata: file path, function/class, approximate line span, and the concrete change you anticipate."
         f"There are no remaining sibling nodes under parent {parent.name}. Check if the current context can help to achieve the task."
-        f"If yes, set is_complete to true; otherwise, set is_complete to false."
+        f"If yes, set is_complete to true; otherwise, set is_complete to false. Provide confidence for the current node."
         f"\n{self._json_response_instruction([])}")
         return prompt
 
@@ -152,16 +155,19 @@ class RecapSWE(ABC):
         except ValidationError as exc:
             raise ValueError(f"LLM response does not match schema: {response}") from exc
 
-    def _recap(self, node: CodeNode, context: str, code_patch: str) -> Tuple[str, str, bool]:
+    def _recap(self, node: CodeNode, context: str, code_patch: str) -> Tuple[str, str, bool, float]:
         prompt = self.recursive_downward_prompt(node, context, code_patch)
         response = self.call_llm(prompt)
         parsed = self.parse_llm_response(response)
         context = parsed.context
         code_patch = parsed.code_patch
-        children = self._resolve_children(parsed.sorted_children)
+        confidence = parsed.confidence
+        children = self._resolve_children(parsed.sorted_children)[: self.max_branching]
 
-        if parsed.is_complete or not children:
-            return context, code_patch, parsed.is_complete
+        if (parsed.is_complete and confidence >= self.complete_conf_threshold) or not children:
+            return context, code_patch, parsed.is_complete, confidence
+
+        best_context, best_patch, best_conf = context, code_patch, confidence
 
         while children:
             current = children[0]
@@ -169,22 +175,28 @@ class RecapSWE(ABC):
 
             if self.is_primitive_node(current):
                 if remaining:
-                    prompt = self.leaf_backtracking_prompt(current, node, context, code_patch, remaining)
+                    prompt = self.leaf_backtracking_prompt(current, node, context, code_patch, remaining[: self.max_branching - 1])
                 else:
                     prompt = self.leaf_completion_prompt(current, node, context, code_patch)
                 response = self.call_llm(prompt)
                 parsed = self.parse_llm_response(response)
                 context = parsed.context
                 code_patch = parsed.code_patch
-                if parsed.is_complete:
-                    return context, code_patch, True
-                children = self._resolve_children(parsed.sorted_children)
+                confidence = parsed.confidence
+                if parsed.is_complete and confidence >= self.complete_conf_threshold:
+                    return context, code_patch, True, confidence
+                if confidence > best_conf:
+                    best_context, best_patch, best_conf = context, code_patch, confidence
+                children = self._resolve_children(parsed.sorted_children)[: self.max_branching]
                 continue
 
             # non-leaf
-            context, code_patch, done = self._recap(current, context, code_patch)
-            if done:
-                return context, code_patch, True
+            context, code_patch, done, child_conf = self._recap(current, context, code_patch)
+            confidence = child_conf
+            if done and confidence >= self.complete_conf_threshold:
+                return context, code_patch, True, confidence
+            if confidence > best_conf:
+                best_context, best_patch, best_conf = context, code_patch, confidence
 
             remaining = children[1:]
             if remaining:
@@ -195,18 +207,21 @@ class RecapSWE(ABC):
             parsed = self.parse_llm_response(response)
             context = parsed.context
             code_patch = parsed.code_patch
-            if parsed.is_complete:
-                return context, code_patch, True
-            children = self._resolve_children(parsed.sorted_children)
+            confidence = parsed.confidence
+            if parsed.is_complete and confidence >= self.complete_conf_threshold:
+                return context, code_patch, True, confidence
+            if confidence > best_conf:
+                best_context, best_patch, best_conf = context, code_patch, confidence
+            children = self._resolve_children(parsed.sorted_children)[: self.max_branching]
 
-        return context, code_patch, False
+        return best_context, best_patch, best_conf >= self.complete_conf_threshold, best_conf
 
 
     def recap(self, node: CodeNode, context: Optional[str] = None, code_patch: Optional[str] = None) -> Tuple[str, str]:
-        """Depth-first traversal that builds concise context and code patch guidance."""
+        """Depth-first traversal exploring top-k children with confidence-based early stopping."""
         context = context or ""
         code_patch = code_patch or ""
-        context, code_patch, _ = self._recap(node, context, code_patch)
+        context, code_patch, _, _ = self._recap(node, context, code_patch)
         return context, code_patch
 
 

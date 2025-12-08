@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -491,6 +492,7 @@ def run_evaluation_stage(args, instances) -> Path:
 
 
 def main(argv: list[str] | None = None) -> None:
+    load_dotenv()
     parser = get_parser()
     args = parser.parse_args(argv)
 

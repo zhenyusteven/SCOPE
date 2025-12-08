@@ -77,54 +77,57 @@ class RecapSWE(ABC):
 
     def recursive_downward_prompt(self, node: CodeNode, context: str, code_patch: str) -> str:
         children = node.children
-        prompt = (f"Here is the coding problem description: {self.task_description}." 
+        prompt = (f"Here is the coding problem description: {self.task_description}."
         f"Now you are at node named {node.name}, which is a {node.kind} and the summary at this level is {node.summary}."
         f"The code patch at this node is {node.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
+        f"Update the context by adding precise metadata that could help locate or modify the bug (file path, function/class name, approximate line span, why it matters, and the hypothesized change if any). Keep it concise but explicit."
         f"You can see these children nodes: {self._format_children(children)}. Please sort the children nodes from the most optimally relavant one to the least to accomplish the task."
+        f"If the node summary is clearly unrelated to the task, stop exploring this branch by returning an empty sorted_children list."
         f"\n{self._json_response_instruction(children)}"
-        f"You should set is_complete to true if you think the current context and code patch can help to achieve the task; otherwise, set is_complete to false."
-        )
+        f"Set is_complete to true only if you think the current context and code patch are sufficient to achieve the task; otherwise, set is_complete to false.")
         return prompt
 
     def nonleaf_backtracking_prompt(self, node: CodeNode, context: str, code_patch: str, remaining_children: List[CodeNode]) -> str:
         remaining_ids = [child.id for child in remaining_children]
-        prompt = (f"You are at {node.name}. It is a {node.kind} and the summary at this level is {node.summary}."
+        prompt = (f"You are back at {node.name}. It is a {node.kind} and the summary at this level is {node.summary}."
         f"The code patch at this node is {node.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
-        f"Now you will return to the parent level."
-        f"Please sort the remaining children nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
+        f"Ensure the context includes the most promising file/function/line locations and suspected edits gathered so far; merge or drop fluff to stay concise."
+        f"Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
         f"\n{self._json_response_instruction(remaining_ids)}")
-        
         return prompt
 
     def nonleaf_completion_prompt(self, node: CodeNode, context: str, code_patch: str) -> str:
         prompt = (f"You are at {node.name}. It is a {node.kind} and the summary at this level is {node.summary}."
         f"The code patch at this node is {node.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
+        f"Ensure the context highlights concrete locations (file paths, functions, line spans) and suggested modifications most relevant to the task."
         "Now you will return to the parent level. There is no remaining nodes. Check if the current context can help to achieve the task."
         "If yes, set is_complete to true; otherwise, set is_complete to false."
         f"\n{self._json_response_instruction([])}")
         return prompt
 
-    def leaf_backtracking_prompt(self, node: CodeNode, context: str, code_patch: str, remaining_children: List[CodeNode]) -> str:
-        remaining_ids = [child.id for child in remaining_children]
-        prompt = (f"You are at {node.name}. It is a {node.kind} and the summary at this level is {node.summary}."
-        f"The code patch at this node is {node.source}."
+    def leaf_backtracking_prompt(self, leaf: CodeNode, parent: CodeNode, context: str, code_patch: str, remaining_siblings: List[CodeNode]) -> str:
+        remaining_ids = [child.id for child in remaining_siblings]
+        prompt = (f"You just visited leaf node {leaf.name}, which is a {leaf.kind} and the summary at this level is {leaf.summary}."
+        f"The code patch at this node is {leaf.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
-        f"Please determine if this node is helpful for completing tha task {self.task_name}. If it is, please return a updated context and code patch." 
-        f"Then please sort the remaining children nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
+        f"Determine whether this leaf contributes to solving task {self.task_name}; if it does, update the context and code patch accordingly, including file path, function/class, line span, and hypothesized fix."
+        f"Determine whether this leaf contributes to solving task {self.task_name}; if it does, update the context and code patch accordingly."
+        f"Now you are back at parent {parent.name}. Please sort the remaining sibling nodes {self._format_children(remaining_ids)} from the most optimally relavant one to the least to accomplish the task."
         f"If there are no remaining nodes, check if the current context can help to achieve the task."
         f"If yes, set is_complete to true; otherwise, set is_complete to false."
         f"\n{self._json_response_instruction(remaining_ids)}")
         return prompt
 
-    def leaf_completion_prompt(self, node: CodeNode, context: str, code_patch: str) -> str:
-        prompt = (f"You are at {node.name}. It is a {node.kind} and the summary at this level is {node.summary}."
-        f"The code patch at this node is {node.source}."
+    def leaf_completion_prompt(self, leaf: CodeNode, parent: CodeNode, context: str, code_patch: str) -> str:
+        prompt = (f"You are at leaf node {leaf.name}. It is a {leaf.kind} and the summary at this level is {leaf.summary}."
+        f"The code patch at this node is {leaf.source}."
         f"Previous context is {context} and relevant code patch is {code_patch}."
-        f"Please determine if this node is helpful for completing tha task {self.task_name}. If it is, please return a updated context and code patch." 
-        f"There is no remaining nodes. Check if the current context can help to achieve the task."
+        f"Please determine if this node is helpful for completing task {self.task_name}. If it is, update the context and code patch."
+        f"If useful, add precise metadata: file path, function/class, approximate line span, and the concrete change you anticipate."
+        f"There are no remaining sibling nodes under parent {parent.name}. Check if the current context can help to achieve the task."
         f"If yes, set is_complete to true; otherwise, set is_complete to false."
         f"\n{self._json_response_instruction([])}")
         return prompt
@@ -149,61 +152,67 @@ class RecapSWE(ABC):
         except ValidationError as exc:
             raise ValueError(f"LLM response does not match schema: {response}") from exc
 
-    def recap(self, node: CodeNode, context: str, code_patch: str) -> Tuple[str, str]:
+    def _recap(self, node: CodeNode, context: str, code_patch: str) -> Tuple[str, str, bool]:
         prompt = self.recursive_downward_prompt(node, context, code_patch)
         response = self.call_llm(prompt)
         parsed = self.parse_llm_response(response)
         context = parsed.context
         code_patch = parsed.code_patch
-        S = self._resolve_children(parsed.sorted_children)
-        if parsed.is_complete:
-            return context, code_patch
+        children = self._resolve_children(parsed.sorted_children)
 
-        while S != []:
-            if self.is_primitive_node(S[0]):
-                if len(S) > 1:
-                    prompt = self.leaf_backtracking_prompt(node, context, code_patch, S[1:]) 
-                    response = self.call_llm(prompt)
-                    parsed = self.parse_llm_response(response)
-                    context = parsed.context
-                    S = self._resolve_children(parsed.sorted_children)
-                    if parsed.is_complete:
-                        return context, code_patch
+        if parsed.is_complete or not children:
+            return context, code_patch, parsed.is_complete
 
+        while children:
+            current = children[0]
+            remaining = children[1:]
+
+            if self.is_primitive_node(current):
+                if remaining:
+                    prompt = self.leaf_backtracking_prompt(current, node, context, code_patch, remaining)
                 else:
-                    prompt = self.leaf_completion_prompt(node, context, code_patch)
-                    response = self.call_llm(prompt)
-                    parsed = self.parse_llm_response(response)
-                    context = parsed.context
-                    S = self._resolve_children(parsed.sorted_children)
-                    if parsed.is_complete:
-                        return context, code_patch
+                    prompt = self.leaf_completion_prompt(current, node, context, code_patch)
+                response = self.call_llm(prompt)
+                parsed = self.parse_llm_response(response)
+                context = parsed.context
+                code_patch = parsed.code_patch
+                if parsed.is_complete:
+                    return context, code_patch, True
+                children = self._resolve_children(parsed.sorted_children)
+                continue
 
+            # non-leaf
+            context, code_patch, done = self._recap(current, context, code_patch)
+            if done:
+                return context, code_patch, True
+
+            remaining = children[1:]
+            if remaining:
+                prompt = self.nonleaf_backtracking_prompt(node, context, code_patch, remaining)
             else:
-                context, code_patch = self.recap(S[0], context, code_patch)
+                prompt = self.nonleaf_completion_prompt(node, context, code_patch)
+            response = self.call_llm(prompt)
+            parsed = self.parse_llm_response(response)
+            context = parsed.context
+            code_patch = parsed.code_patch
+            if parsed.is_complete:
+                return context, code_patch, True
+            children = self._resolve_children(parsed.sorted_children)
 
-                if len(S) > 1:
-                    prompt = self.nonleaf_backtracking_prompt(node, context, code_patch, S[1:])
-                    response = self.call_llm(prompt)
-                    parsed = self.parse_llm_response(response)
-                    context = parsed.context
-                    S = self._resolve_children(parsed.sorted_children)
-                    if parsed.is_complete:
-                        return context, code_patch
-                else:
-                    prompt = self.nonleaf_completion_prompt(node, context, code_patch)
-                    response = self.call_llm(prompt)
-                    parsed = self.parse_llm_response(response)
-                    context = parsed.context
-                    S = self._resolve_children(parsed.sorted_children)
-                    if parsed.is_complete:
-                        return context, code_patch
+        return context, code_patch, False
+
+
+    def recap(self, node: CodeNode, context: Optional[str] = None, code_patch: Optional[str] = None) -> Tuple[str, str]:
+        """Depth-first traversal that builds concise context and code patch guidance."""
+        context = context or ""
+        code_patch = code_patch or ""
+        context, code_patch, _ = self._recap(node, context, code_patch)
         return context, code_patch
 
 
     def run(self, context: str = None, code_patch: str = None) -> Tuple[str, str]:
         # Run ReCAP-SWE, with a closure function inside
-        
+
         return self.recap(self.code_tree.root, context, code_patch)
 
         
@@ -220,4 +229,3 @@ class RecapSWE(ABC):
 
     def get_output_code(self, with_line_id: bool = False) -> str:
         return self.editor.get_all_lines(with_line_id=with_line_id)
-

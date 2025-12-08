@@ -82,6 +82,26 @@ def _filter_batch_items(
     return instances
 
 
+def _load_context_hints(context_dir: Path | None) -> dict[str, str]:
+    """Load per-instance context hints from JSON files in a directory."""
+    if context_dir is None:
+        return {}
+
+    hints: dict[str, str] = {}
+    for path in Path(context_dir).glob("*.json"):
+        try:
+            data = load_file(path)
+            instance_id = data.get("instance_id")
+            context = data.get("context")
+            if instance_id and context:
+                hints[instance_id] = context
+            else:
+                logger.warning("Skipping context file %s (missing instance_id or context)", path)
+        except Exception as exc:
+            logger.warning("Failed to load context from %s: %s", path, exc)
+    return hints
+
+
 class SimpleBatchInstance(BaseModel):
     """A simple way to configure a single instance in a batch of instances that all
     use similar deployment configurations.
@@ -279,7 +299,14 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
     """
 
     split: Literal["dev", "test"] = "dev"
-
+    
+    context_dir: Path | None = Field(
+        default=None,
+        description="Optional directory containing JSON files with per-instance context. "
+        "Each file must have 'instance_id' and 'context' fields.",
+    )
+    """If provided, contents are added to the problem statement's extra_fields under key 'hint'."""
+    
     deployment: DeploymentConfig = Field(
         default_factory=lambda: DockerDeploymentConfig(image="python:3.11"),
     )
@@ -326,10 +353,18 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
 
         if isinstance(self.deployment, DockerDeploymentConfig):
             self.deployment.platform = "linux/amd64"
+            
+        hint_map = _load_context_hints(self.context_dir)
+        if hint_map:
+            logger.info("Loaded %d context hints from %s", len(hint_map), self.context_dir)
 
-        instances = [
-            SimpleBatchInstance.from_swe_bench(instance).to_full_batch_instance(self.deployment) for instance in ds
-        ]
+        simple_instances = [SimpleBatchInstance.from_swe_bench(instance) for instance in ds]
+        for instance in simple_instances:
+            hint = hint_map.get(instance.instance_id)
+            if hint:
+                instance.extra_fields["hint"] = hint
+
+        instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
         return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
 
     @property

@@ -301,18 +301,18 @@ def evaluate(
     code_model: str = "gpt-4o-mini",
     **llm_kwargs,
 ) -> Path:
+
     for inst in instances:
-        if patches_dir:
-            patch_file = patches_dir / f"{inst['instance_id']}.patch"
-            if not patch_file.exists():
-                logger.warning("Patch file %s not found; skipping %s", patch_file, inst["instance_id"])
-                continue
-            patch_text = patch_file.read_text()
-        else:
-            tree_file = tree_dir / f"{inst['instance_id']}.json"
-            # patch_text = generate_patch_from_tree(inst, tree_file)
-            context_file = context_dir / f"{inst['instance_id']}.json"
-            patch_text = generate_patch_from_context(inst, tree_file, context_file, code_model, **llm_kwargs)
+        tree_file = tree_dir / f"{inst['instance_id']}.json"
+        context_file = context_dir / f"{inst['instance_id']}.json"
+
+        # Skip instances without context ✔
+        if not context_file.exists():
+            logger.warning("Skipping %s because context not found", inst["instance_id"])
+            continue
+
+        patch_text = generate_patch_from_context(inst, tree_file, context_file, code_model, **llm_kwargs)
+
         pred_dir = predictions_dir / inst["instance_id"]
         create_prediction_file(inst, patch_text, run_name, pred_dir)
 
@@ -420,7 +420,6 @@ def get_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
 def run_tree_stage(args, instances) -> None:
     build_trees(
         instances,
@@ -440,7 +439,10 @@ def generate_context(instances: list[dict[str, Any]], tree_dir: Path, context_di
     for inst in instances:
         tree_file = tree_dir / f"{inst['instance_id']}.json"
         context_file = context_dir / f"{inst['instance_id']}.json"
-        
+        # Skip if no Tree
+        if not tree_file.exists():
+            logger.warning("Tree not found for %s, skipping context generation", inst["instance_id"])
+            continue
         if skip_existing and context_file.exists():
             logger.info("Context already exists for %s, skipping", inst["instance_id"])
             continue

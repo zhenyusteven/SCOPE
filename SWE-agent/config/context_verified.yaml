@@ -6,7 +6,6 @@ instances:
   split: test
   # Only run the instances we have hints for
   filter: "^(pydata__xarray-3151|pydata__xarray-3305|pydata__xarray-3677|pydata__xarray-4075|pydata__xarray-4094|pydata__xarray-4356|pydata__xarray-4629|pydata__xarray-4687|pytest-dev__pytest-10051|pytest-dev__pytest-10081|pytest-dev__pytest-5262|pytest-dev__pytest-5631|pytest-dev__pytest-7236|pytest-dev__pytest-7324|pytest-dev__pytest-7432|pytest-dev__pytest-7490|pytest-dev__pytest-7521|scikit-learn__scikit-learn-10844|scikit-learn__scikit-learn-10908|scikit-learn__scikit-learn-11310|scikit-learn__scikit-learn-11578|scikit-learn__scikit-learn-12585|scikit-learn__scikit-learn-12682|scikit-learn__scikit-learn-12973|scikit-learn__scikit-learn-13124)$"
-  context_dir: /Users/Likehan/Desktop/cs329a_hw/SCOPE/data/swe_bench/context_1207
   evaluate: true
 
 

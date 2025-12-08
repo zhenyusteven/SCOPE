@@ -189,7 +189,7 @@ class RecapSWE(ABC):
                     context = parsed.context
                     S = self._resolve_children(parsed.sorted_children)
                     if parsed.is_complete:
-                        return context
+                        return context, code_patch
                 else:
                     prompt = self.nonleaf_completion_prompt(node, context, code_patch)
                     response = self.call_llm(prompt)
@@ -197,7 +197,7 @@ class RecapSWE(ABC):
                     context = parsed.context
                     S = self._resolve_children(parsed.sorted_children)
                     if parsed.is_complete:
-                        return context
+                        return context, code_patch
         return context, code_patch
 
 

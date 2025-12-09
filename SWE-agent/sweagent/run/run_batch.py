@@ -29,6 +29,7 @@ All instance specifications support the [green]filter[/green], [green]slice[/gre
 With [green]filter[/green], you can select specific instances, e.g., [green]--instances.filter='instance_id_1|instance_id_2'[/green].
 """
 
+import asyncio
 import getpass
 import json
 import logging
@@ -46,6 +47,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from rich.live import Live
 from swerex.deployment.hooks.status import SetStatusDeploymentHook
+from swerex.runtime.abstract import UploadRequest
 
 from sweagent import TRAJECTORY_DIR
 from sweagent.agent.agents import AgentConfig, get_agent_from_config
@@ -356,6 +358,7 @@ class RunBatch:
         )
         try:
             env.start()
+            self._upload_context_file(env, instance.problem_statement)
             self._chooks.on_instance_start(index=0, env=env, problem_statement=instance.problem_statement)
             result = agent.run(
                 problem_statement=instance.problem_statement,
@@ -407,6 +410,37 @@ class RunBatch:
         # otherwise, we will skip it
         self.logger.info(f"⏭️ Skipping existing trajectory: {log_path}")
         return exit_status
+
+    def _upload_context_file(self, env: SWEEnv, problem_statement) -> None:
+        """Upload per-instance context file (e.g., repo tree) into the runtime."""
+        try:
+            extra_fields = problem_statement.get_extra_fields()
+        except Exception:
+            return
+        source = extra_fields.get("context_file")
+        target = extra_fields.get("context_file_target")
+        if not source or not target:
+            return
+
+        source_path = Path(source)
+        if not source_path.exists():
+            self.logger.warning("Context file %s for %s not found, skipping upload", source_path, problem_statement.id)
+            return
+        try:
+            asyncio.run(
+                env.deployment.runtime.upload(
+                    UploadRequest(source_path=source_path.as_posix(), target_path=str(target))
+                )
+            )
+            self.logger.info("Uploaded context file for %s to %s", problem_statement.id, target)
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to upload context file %s -> %s for %s: %s",
+                source_path,
+                target,
+                problem_statement.id,
+                exc,
+            )
 
     def _add_instance_log_file_handlers(self, instance_id: str, multi_worker: bool = False) -> None:
         filename_template = f"{instance_id}.{{level}}.log"

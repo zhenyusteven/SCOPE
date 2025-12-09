@@ -668,6 +668,7 @@ class DefaultAgent(AbstractAgent):
             **self.tools.config.env_variables,
             **kwargs,
             problem_statement=self._problem_statement.get_problem_statement(),
+            instance_id=getattr(self._problem_statement, "id", ""),
             repo=self._env.repo.repo_name if self._env.repo is not None else "",
             **self._problem_statement.get_extra_fields(),
         )

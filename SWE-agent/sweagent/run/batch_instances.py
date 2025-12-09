@@ -3,7 +3,7 @@ import random
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from swerex.deployment.config import (
@@ -82,21 +82,36 @@ def _filter_batch_items(
     return instances
 
 
-def _load_context_hints(context_dir: Path | None) -> dict[str, str]:
-    """Load per-instance context hints from JSON files in a directory."""
+class _ContextResource(NamedTuple):
+    text: str | None
+    file_path: Path | None
+
+
+def _load_context_hints(context_dir: Path | None) -> dict[str, _ContextResource]:
+    """Load per-instance context from JSON files in a directory.
+
+    Supports two formats:
+    1) {"instance_id": "...", "context": "..."}  -> text hint injected into the prompt.
+    2) Tree JSONs -> file uploaded to the runtime.
+    """
     if context_dir is None:
         return {}
 
-    hints: dict[str, str] = {}
+    hints: dict[str, _ContextResource] = {}
     for path in Path(context_dir).glob("*.json"):
         try:
             data = load_file(path)
-            instance_id = data.get("instance_id")
+            if not isinstance(data, dict):
+                logger.warning("Skipping context file %s (expected JSON object)", path)
+                continue
+            instance_id = data.get("instance_id") or path.stem
             context = data.get("context")
-            if instance_id and context:
-                hints[instance_id] = context
-            else:
-                logger.warning("Skipping context file %s (missing instance_id or context)", path)
+            if context:
+                hints[instance_id] = _ContextResource(text=context, file_path=None)
+                continue
+
+            # Treat JSONs without a `context` key as tree files
+            hints[instance_id] = _ContextResource(text=None, file_path=path)
         except Exception as exc:
             logger.warning("Failed to load context from %s: %s", path, exc)
     return hints
@@ -303,9 +318,9 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
     context_dir: Path | None = Field(
         default=None,
         description="Optional directory containing JSON files with per-instance context. "
-        "Each file must have 'instance_id' and 'context' fields.",
+        "Supports {instance_id, context} JSONs and tree JSONs (uploaded as files).",
     )
-    """If provided, contents are added to the problem statement's extra_fields under key 'hint'."""
+    """If provided, text contents are added to the problem statement's extra_fields under key 'hint'. Tree JSONs are uploaded for the agent."""
     
     deployment: DeploymentConfig = Field(
         default_factory=lambda: DockerDeploymentConfig(image="python:3.11"),
@@ -362,7 +377,12 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
         for instance in simple_instances:
             hint = hint_map.get(instance.instance_id)
             if hint:
-                instance.extra_fields["hint"] = hint
+                if hint.text:
+                    instance.extra_fields["hint"] = hint.text
+                if hint.file_path:
+                    instance.extra_fields.setdefault("hint", "context_file_available")
+                    instance.extra_fields["context_file"] = str(hint.file_path)
+                    instance.extra_fields["context_file_target"] = f"/root/{instance.instance_id}.json"
 
         instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
         return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)

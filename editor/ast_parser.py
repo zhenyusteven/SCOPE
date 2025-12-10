@@ -239,12 +239,12 @@ class ProjectParser:
         transformer = transformer_cls(symbol_path, **kwargs)
         new_module = module.visit(transformer)
 
-        # 更新缓存
+        # Update cached source/module
         new_code = new_module.code
         self._sources[file] = new_code
         self._modules[file] = new_module
 
-        # 重新生成 index
+        # Rebuild index
         wrapper = cst_meta.MetadataWrapper(new_module)
         collector = _SymbolCollector(file)
         wrapper.visit(collector)
@@ -280,7 +280,7 @@ class ProjectParser:
             raise KeyError(f"File not loaded: {file}")
         module = self._modules[file]
 
-        # 解析插入代码为语句列表（支持多行语句）
+        # Parse the incoming code into a statement list (supports multi-line statements)
         code_mod = cst.parse_module(new_code if new_code.endswith("\n") else new_code + "\n")
         stmts_to_insert = list(code_mod.body)
 
@@ -299,61 +299,62 @@ class ProjectParser:
                 return updated_node
 
             def leave_FunctionDef(self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef):
-                # 仅处理目标函数/方法
+                # Only touch the target function/method
                 qualname = ".".join(
                     self._class_stack + [original_node.name.value]) if self._class_stack else original_node.name.value
                 if qualname != self.target:
                     return updated_node
 
-                # 计算目标行（以 original_node 的行号为准，metadata 对 original 有效）
+                # Compute the target line using the original_node positions (metadata is bound to original)
                 func_pos = self.get_metadata(cst_meta.PositionProvider, original_node)
-                target_line = func_pos.start.line + 1 + relative_line  # def 后第一行 = +1
+                target_line = func_pos.start.line + 1 + relative_line  # first body line = def line + 1
 
-                # 在 original 树上解析“行号 -> (路径, 在该 body 的索引, 是不是精确命中一条语句起始行)”
-                # 路径由一串语句下标组成，含义是：从函数体开始，依次取 body.body[idx]，直到到达目标父 body 的拥有者语句
+                # Resolve on the original tree: map line -> (path, index in that body, did we hit a stmt start?)
+                # Path is a list of statement indexes: starting from the function body, walk body.body[idx]
+                # until reaching the statement that owns the target parent body.
                 def resolve_insertion(original_body: cst.IndentedBlock, target_line: int):
-                    path: list[int] = []  # 语句下标路径
+                    path: list[int] = []  # statement index path
 
-                    # 递归下降：在当前 body 中按语句顺序扫描
+                    # Recursive descent: scan statements in order within the current body
                     def descend(body: cst.IndentedBlock) -> tuple[list[int], int, bool]:
                         stmts = list(body.body)
                         for i, stmt in enumerate(stmts):
                             pos = self.get_metadata(cst_meta.PositionProvider, stmt)
-                            # 如果目标行在此语句之前或正好命中该语句起始行
+                            # If the target line is before or exactly at the start of this statement
                             if target_line <= pos.start.line:
-                                # 命中：在当前 body 的 i 位置插入/替换
+                                # Hit: insert/replace at position i within the current body
                                 return (path.copy(), i, target_line == pos.start.line)
-                            # 若目标行在该语句范围内，并且该语句有子 body，则进入子 body
+                            # If the target line falls within this statement's range and it has a sub-body, descend
                             pos_end = self.get_metadata(cst_meta.PositionProvider, stmt).end
                             if pos.start.line < target_line <= pos_end.line:
-                                # 仅处理带 body 的复合语句
+                                # Only handle compound statements that own a body
                                 if isinstance(stmt, (cst.If, cst.For, cst.While, cst.With, cst.Try)):
                                     path.append(i)
                                     return descend(stmt.body)
-                                # 其它复合语句类型可按需扩展
-                        # 没有更早/更内层的位置：落在当前 body 末尾
+                                # Other compound types can be added if needed
+                        # No earlier/deeper spot found: place at the end of the current body
                         return (path.copy(), len(stmts), False)
 
                     return descend(original_body)
 
                 orig_path, insert_idx, hit_stmt_start = resolve_insertion(original_node.body, target_line)
 
-                # 根据 original 的路径，在 updated_node 上定位目标父 body
+                # Use the original path to locate the target parent body on updated_node
                 def get_parent_body(updated_func: cst.FunctionDef, path: list[int]) -> tuple[
                     cst.CSTNode, cst.IndentedBlock]:
-                    cur_owner: cst.CSTNode = updated_func  # 当前“拥有 body”的节点（函数或某个语句）
+                    cur_owner: cst.CSTNode = updated_func  # current node that owns a body (function or stmt)
                     cur_body: cst.IndentedBlock = updated_func.body
                     for idx in path:
-                        # 取当前 body 里的第 idx 个语句，再进入它的 .body
+                        # Take the idx-th statement in the current body, then go into its .body
                         stmt = list(cur_body.body)[idx]
-                        # 这些语句都拥有 .body（对应 resolve 时我们只会在这些类型上下钻）
+                        # These statements all have .body; resolve only descends into these kinds
                         cur_owner = stmt
                         cur_body = stmt.body  # type: ignore[attr-defined]
                     return cur_owner, cur_body
 
                 owner_node, parent_body = get_parent_body(updated_node, orig_path)
 
-                # 在 parent_body.body 上做插入/替换
+                # Perform insert/replace on parent_body.body
                 new_body_stmts = list(parent_body.body)
                 if mode == "insert":
                     new_body_stmts[insert_idx:insert_idx] = stmts_to_insert
@@ -366,18 +367,18 @@ class ProjectParser:
 
                 new_parent_body = parent_body.with_changes(body=new_body_stmts)
 
-                # 把新的 body 写回 owner_node，再把 owner_node 写回函数
+                # Write the new body back to owner_node, then write owner_node back into the function
                 if owner_node is updated_node:
                     return updated_node.with_changes(body=new_parent_body)
                 else:
-                    # owner_node 是 If/For/While/With/Try，这些都有 .with_changes(body=...)
-                    # 需要把该语句替换回其父 body。沿 path 回溯一层一层替换。
-                    # 为了简单，我们从 updated_node 再按 path 重建，逐层替换。
+                    # owner_node is If/For/While/With/Try; all support .with_changes(body=...)
+                    # We need to replace that statement back into its parent body, walking the path upward.
+                    # For simplicity, rebuild from updated_node along the path and replace layer by layer.
                     def rebuild(updated_func: cst.FunctionDef, path: list[int],
                                 new_leaf_body: cst.IndentedBlock) -> cst.FunctionDef:
                         if not path:
                             return updated_func.with_changes(body=new_leaf_body)
-                        # 逐层下钻，收集沿途 body 引用
+                        # Descend layer by layer, collecting body references along the way
                         bodies = [updated_func.body]
                         node = updated_func
                         cur_body = updated_func.body
@@ -385,7 +386,7 @@ class ProjectParser:
                             stmt = list(cur_body.body)[idx]
                             bodies.append(stmt.body)  # type: ignore[attr-defined]
                             cur_body = stmt.body  # type: ignore[attr-defined]
-                        # 回溯替换
+                        # Backtrack and replace
                         cur_replaced_body = new_leaf_body
                         for depth in reversed(range(len(path))):
                             idx = path[depth]
@@ -399,12 +400,12 @@ class ProjectParser:
 
                     return rebuild(updated_node, orig_path, new_parent_body)
 
-        # 用 MetadataWrapper 驱动变换（metadata 绑定在 original 树上）
+        # Run the transform with MetadataWrapper (metadata is bound to the original tree)
         wrapper = cst_meta.MetadataWrapper(module)
         new_module = wrapper.visit(QuickEdit(symbol_path))
         new_src = new_module.code
 
-        # 缓存 & 重建索引
+        # Cache & rebuild index
         self._sources[file] = new_src
         self._modules[file] = new_module
         wrapper2 = cst_meta.MetadataWrapper(new_module)

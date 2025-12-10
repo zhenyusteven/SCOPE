@@ -63,10 +63,10 @@ class CodeNode:
     parent: Optional[str] = None
     children: List[str] = field(default_factory=list)
 
-    # 内容层
-    source: Optional[str] = None      # 叶子代码
-    summary: Optional[str] = None     # LLM 摘要（也可给叶子）
-    meta: Dict[str, object] = field(default_factory=dict)  # file/qualname/pos 等
+    # Content layer
+    source: Optional[str] = None      # Leaf code
+    summary: Optional[str] = None     # LLM summary (may exist on leaves)
+    meta: Dict[str, object] = field(default_factory=dict)  # file/qualname/pos etc
 
     def add_child(self, child: "CodeNode") -> None:
         self.children.append(child.id)
@@ -81,11 +81,11 @@ class CodeNode:
         max_chars: int = 10000
     ) -> str:
         """
-        为补全/生成准备的文本片段：
-          - best: 叶子优先 source，否则 summary
+        Prepare text snippets for completion/generation:
+          - best: prefer leaf source; otherwise summary
           - both: summary + source
-          - summary: 只要摘要
-          - source: 只要源码
+          - summary: summary only
+          - source: source only
         """
         blocks: List[str] = []
         if include == "best":
@@ -109,7 +109,7 @@ class CodeNode:
         return out[:max_chars]
      
     def to_dict(self, include_source: bool = True) -> Dict:
-        """递归转换为可序列化的 dict"""
+        """Recursively convert to a serializable dict"""
         data = {
             "id": self.id,
             "name": self.name,
@@ -140,7 +140,7 @@ class CodeSemanticTree:
             self.root = loaded.root
         
         
-    # ---- 基础增删改查 ----
+    # ---- Basic CRUD helpers ----
     def add_node(self, node: CodeNode) -> None:
         self.nodes[node.id] = node
 
@@ -171,16 +171,16 @@ class CodeSemanticTree:
             return abs_path.as_posix(), abs_path
  
     
-    # ---- 构建：从 ProjectParser ----
+    # ---- Build: from ProjectParser ----
     def build_from_parser(self, parser: "ProjectParser") -> None:
         """
-        文件/类为中间节点；函数/方法为叶子；叶子带 source。
-        中间节点 summary 留空，后续可由 LLM 填充。
-        meta: file/qualname/kind/position 等。
+        Files/classes become intermediate nodes; functions/methods are leaves and carry source.
+        Intermediate node summaries stay empty and can be filled by an LLM later.
+        meta: file/qualname/kind/position, etc.
         """     
         for file in parser.get_all_files():
             file_id, abs_file = self._normalize_file_path(file)
-            # 从 parser 拿整个文件源码
+            # Pull entire file source from the parser
             file_src = parser._sources.get(abs_file, abs_file.read_text(encoding="utf-8"))
             file_node = CodeNode(
                 id=file_id,
@@ -191,7 +191,7 @@ class CodeSemanticTree:
             )
             self.add_child(self.root.id, file_node)
 
-            # 预先缓存类节点，便于方法挂载
+            # Pre-cache class nodes so methods can attach
             class_ids: Dict[str, str] = {}
 
             for rec in parser.list_symbols(abs_file):
@@ -226,7 +226,7 @@ class CodeSemanticTree:
                             "position": (rec.position.start_line, rec.position.end_line),
                         },
                     )
-                    # 方法挂到类；函数挂到文件
+                    # Methods attach to classes; functions attach to files
                     if rec.kind == "method":
                         cls_name = ".".join(rec.qualname.split(".")[:-1])
                         parent_id = class_ids.get(cls_name, file_id)
@@ -237,18 +237,18 @@ class CodeSemanticTree:
 
     def build_from_parser_with_folder(self, parser: "ProjectParser") -> None:
         """
-        文件/类为中间节点；函数/方法为叶子；叶子带 source。
-        遇到每个文件夹路径都生成一个 folder 节点。
+        Files/classes are intermediate nodes; functions/methods are leaves carrying source.
+        Create a folder node for every directory encountered.
         """
         root_dir = self.parser.root
         for file in parser.get_all_files():
             file_id, abs_file = self._normalize_file_path(file)
-            rel_parts = abs_file.relative_to(root_dir).parts  # 相对路径拆分
+            rel_parts = abs_file.relative_to(root_dir).parts  # split relative path
             parent_id = self.root.id
             path_accum = []
 
-            # === Step 1: 确保每一层文件夹节点存在 ===
-            for part in rel_parts[:-1]:  # 忽略文件名，只处理目录
+            # === Step 1: ensure each folder node exists ===
+            for part in rel_parts[:-1]:  # ignore file name; only process directories
                 path_accum.append(part)
                 folder_path = Path(*path_accum).as_posix()
                 if folder_path not in self.nodes:
@@ -263,7 +263,7 @@ class CodeSemanticTree:
                     self.add_child(parent_id, folder_node)
                 parent_id = folder_path
 
-            # === Step 2: 添加文件节点 ===
+            # === Step 2: add file node ===
             file_src = parser._sources.get(abs_file, abs_file.read_text(encoding="utf-8"))
             file_node = CodeNode(
                 id=file_id,
@@ -274,7 +274,7 @@ class CodeSemanticTree:
             )
             self.add_child(parent_id, file_node)
 
-            # === Step 3: 添加类与函数节点 ===
+            # === Step 3: add class and function nodes ===
             class_ids: Dict[str, str] = {}
             for rec in parser.list_symbols(abs_file):
                 node_id = f"{file_id}::{rec.qualname}"
@@ -314,7 +314,7 @@ class CodeSemanticTree:
                         parent_id_ = file_id
                     self.add_child(parent_id_, leaf)
 
-    # ---- 遍历/导航 ----
+    # ---- Traversal/navigation ----
     def ancestors(self, node_id: str) -> List[str]:
         out: List[str] = []
         cur = self.nodes[node_id].parent
@@ -331,15 +331,15 @@ class CodeSemanticTree:
         while stack:
             nid = stack.pop()
             yield nid
-            # children 从左到右
+            # children ordered left-to-right
             stack.extend(reversed(self.nodes[nid].children))
 
-    # ---- 搜索（name or qualname 正则）----
+    # ---- Search (name or qualname regex) ----
     def find(self, pattern: str) -> List[str]:
         r = re.compile(pattern)
         return [nid for nid, n in self.nodes.items() if r.search(n.name)]
 
-    # ---- 相关性打分（可替换）----
+    # ---- Relevance scoring (swappable) ----
     @staticmethod
     def _default_score(query: str, node: CodeNode) -> float:
         # place holder
@@ -347,38 +347,38 @@ class CodeSemanticTree:
 
     @staticmethod
     def _approx_tokens(text: str) -> int:
-        """非常粗的 token 估算。按 4 chars ≈ 1 token。"""
+        """Very rough token estimate. Roughly 4 chars ~ 1 token."""
         if not text:
             return 0
         return max(1, len(text) // 4)
 
-    # ---- 上下文收集：从 root 出发按相关性下钻，受 token 预算限制 ----
+    # ---- Context collection: descend from root by relevance under a token budget ----
     def collect_context(
         self,
         query: str,
         token_budget: int = 1200,
         include_order: Tuple[str, ...] = ("ancestors", "self", "siblings", "children"),
-        include_mode: str = "best",    # 节点文本模式：best|both|summary|source
+        include_mode: str = "best",    # Node text mode: best|both|summary|source
         score_fn: Optional[Callable[[str, CodeNode], float]] = None,
     ) -> Dict[str, str]:
         """
-        返回 {node_id: text}，用于放入 LLM prompt。
-        策略：
-          1) 计算每个节点的相关度得分
-          2) 优先遍历高分分支（best-first）
-          3) 对每个落点，按 include_order 依次尝试加入文本，直到 token_budget 用尽
+        Return {node_id: text} for use in an LLM prompt.
+        Strategy:
+          1) compute a relevance score per node
+          2) traverse high-score branches first (best-first)
+          3) at each landing node, add text per include_order until token_budget is used up
         """
-        ## TODO：收集上下文的方式。需要定义搜索方式。
+        ## TODO: refine the context-collection/search strategy.
         score_fn = score_fn or self._default_score
 
-        # 预计算得分
+        # Pre-compute scores
         scores: Dict[str, float] = {nid: score_fn(query, n) for nid, n in self.nodes.items()}
 
-        # best-first：从 root 出发，优先走高分 children
+        # Best-first: start from root, prefer children with higher scores
         out: Dict[str, str] = {}
         used_tokens = 0
 
-        #在不超过 token 限制的前提下，逐个添加最相关的节点内容
+        # Add the most relevant node content while staying within the token budget
         def try_add(nid: str) -> None:
 
             nonlocal used_tokens
@@ -393,12 +393,12 @@ class CodeSemanticTree:
                 out[nid] = text
                 used_tokens += need
 
-        # 按得分排序 children
+        # Sort children by score
         def sorted_children(nid: str) -> List[str]:
             ch = self.nodes[nid].children
             return sorted(ch, key=lambda cid: scores[cid], reverse=True)
 
-        # 遍历
+        # Traverse
         frontier = ["root"]
         visited = set()
         while frontier and used_tokens < token_budget:
@@ -407,7 +407,7 @@ class CodeSemanticTree:
                 continue
             visited.add(nid)
 
-            # 当前落点，按策略收集
+            # Collect text for the current node according to the strategy
             if "ancestors" in include_order:
                 for aid in self.ancestors(nid):
                     try_add(aid)
@@ -426,7 +426,7 @@ class CodeSemanticTree:
                 for cid in sorted_children(nid):
                     try_add(cid)
 
-            # 继续向下扩展 frontier（按高分 child）
+            # Continue expanding the frontier (prioritizing higher-score children)
             frontier[:0] = sorted_children(nid)
 
         return out
@@ -438,11 +438,11 @@ class CodeSemanticTree:
         max_workers: int = 10,
     ) -> None:
         """
-        从叶子到根，递归生成每个节点的 summary。
-        summarize_fn: 一个函数 (text:str) -> summary:str
+        Recursively generate a summary for each node from leaves up to the root.
+        summarize_fn: function (text:str) -> summary:str
         """
-        ## TODO:定义更智能的summary 生成策略、逻辑
-        # 拿到所有节点的拓扑顺序（叶子在前）
+        ## TODO: design a smarter summary generation strategy/logic
+        # Get a topological order of all nodes (leaves first)
         order = list(self.iter_dfs("root"))[::-1]
         work_nodes = [nid for nid in order if not self.nodes[nid].is_leaf()]
         if not work_nodes:
@@ -512,7 +512,7 @@ class CodeSemanticTree:
 
 
     def to_json(self, include_source: bool = True, indent: int = 2) -> str:
-        """导出整棵语义树为 JSON 字符串"""
+        """Export the entire semantic tree as a JSON string"""
         if not self.root:
             raise ValueError("Tree has no root node")
 
@@ -577,34 +577,33 @@ class CodeSemanticTree:
         new_code: str,
         mode: str = "insert",
     ):
-        """编辑树中一个函数/方法节点，并同步 parser 与树"""
+        """Edit a function/method node in the tree and keep the parser/tree in sync"""
         file_id, abs_file = self._normalize_file_path(file_path)
         record, new_src = self.parser.edit_symbol(abs_file, symbol_path, relative_line, new_code, mode)
 
-        # 更新 parser 缓存（parser 自己已经做了）
-        # 更新 file 层节点源码
+        # Parser cache already refreshed; now refresh the file-level node source
         file_node = self.nodes.get(file_id)
         if file_node:
             file_node.source = new_src
 
-        # 更新目标函数节点的源码
+        # Refresh the target function node source
         target_id = f"{file_id}::{symbol_path}"
         if target_id in self.nodes:
             func_node = self.nodes[target_id]
             func_node.source = self.parser.get_source_with_context(record)
         else:
-            # 若树中没该节点（新增函数），则重建该文件的分支
+            # If the node is missing (new function), rebuild this file branch
             self._rebuild_file_branch(abs_file)
 
     def _rebuild_file_branch(self, file_path: str | Path):
-        """重建某个文件的节点分支"""
+        """Rebuild the branch of nodes for a given file"""
         file_id, abs_file = self._normalize_file_path(file_path)
-        # 先清理旧的 file 子树
+        # Clear the old file subtree first
         to_delete = [nid for nid in self.nodes if nid.startswith(file_id + "::")]
         for nid in to_delete:
             self.nodes.pop(nid, None)
 
-        # 重新解析并挂载子节点
+        # Re-parse and attach child nodes
         recs = self.parser.list_symbols(abs_file)
         class_nodes = {}
 
@@ -647,7 +646,7 @@ class CodeSemanticTree:
                 else:
                     self.add_child(file_id, func_node)
 
-    # ---- 展示 ----
+    # ---- Display ----
     def display(self, node_id: str = "root", indent: int = 0) -> None:
         node = self.nodes[node_id]
         prefix = "  " * indent
